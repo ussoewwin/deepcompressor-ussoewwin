@@ -57,6 +57,12 @@ class DiffusionPtqRunConfig:
             Directory path to save the model checkpoint.
         copy_on_save (`bool`, *optional*, defaults to `False`):
             Whether to copy the quantization cache on save.
+        export_nunchaku_sdxl (`str`, *optional*, defaults to `""`):
+            If set, export a single-file Nunchaku SDXL UNet checkpoint in safetensors format to this path.
+        export_nunchaku_flux (`str`, *optional*, defaults to `""`):
+            If set, export a single-file Nunchaku FLUX.1-dev transformer checkpoint in safetensors format to this path.
+        cleanup_run_cache_after_export (`bool`, *optional*, defaults to `False`):
+            If True, remove the per-run cache directory (which contains intermediate *.pt files) after exporting.
     """
 
     cache: DiffusionPtqCacheConfig | None
@@ -72,6 +78,9 @@ class DiffusionPtqRunConfig:
     load_from: str = ""
     save_model: str = ""
     copy_on_save: bool = False
+    export_nunchaku_sdxl: str = ""
+    export_nunchaku_flux: str = ""
+    cleanup_run_cache_after_export: bool = False
 
     def __post_init__(self):
         # region set text encoder quanatization scale default dtype

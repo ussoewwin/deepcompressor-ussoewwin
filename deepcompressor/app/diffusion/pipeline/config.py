@@ -83,6 +83,7 @@ class DiffusionPipelineConfig:
 
     name: str
     path: str = ""
+    unet_path: str = ""
     dtype: torch.dtype = field(
         default_factory=lambda s=torch.float32: eval_dtype(s, with_quant_dtype=False, with_none=False)
     )
@@ -101,6 +102,8 @@ class DiffusionPipelineConfig:
             self.task = "depth-to-image"
         elif self.name == "flux.1-fill-dev":
             self.task = "inpainting"
+        elif self.name == "flux.1-kontext-dev":
+            self.task = "image-to-image"
 
     def build(
         self, *, dtype: str | torch.dtype | None = None, device: str | torch.device | None = None
@@ -324,7 +327,7 @@ class DiffusionPipelineConfig:
         model.register_module("_low_rank_branches", branches)
 
     @staticmethod
-    def _default_build(
+    def _default_build(  # noqa: C901
         name: str, path: str, dtype: str | torch.dtype, device: str | torch.device, shift_activations: bool
     ) -> DiffusionPipeline:
         if not path:
@@ -336,6 +339,8 @@ class DiffusionPipelineConfig:
                 path = "PixArt-alpha/PixArt-Sigma-XL-2-1024-MS"
             elif name == "flux.1-dev":
                 path = "black-forest-labs/FLUX.1-dev"
+            elif name == "flux.1-kontext-dev":
+                path = "black-forest-labs/FLUX.1-Kontext-dev"
             elif name == "flux.1-canny-dev":
                 path = "black-forest-labs/FLUX.1-Canny-dev"
             elif name == "flux.1-depth-dev":
@@ -344,12 +349,33 @@ class DiffusionPipelineConfig:
                 path = "black-forest-labs/FLUX.1-Fill-dev"
             elif name == "flux.1-schnell":
                 path = "black-forest-labs/FLUX.1-schnell"
+            elif name in ("qwen-image", "qwenimage") or name.startswith("qwenimage"):
+                path = "Qwen/Qwen-Image"
+            elif name in ("qwen-image-edit-2511", "qwenimage-edit-2511"):
+                path = "Qwen/Qwen-Image-Edit-2511"
+            elif name in (
+                "qwen-image-edit",
+                "qwenimage-edit",
+                "qwen-image-edit-2509",
+                "qwenimage-edit-2509",
+            ) or name.startswith("qwenimage-edit"):
+                # Qwen-Image-Edit family (edit / edit-2509 / etc.)
+                # Default to the base edit model; users can override `path` in yaml.
+                path = "Qwen/Qwen-Image-Edit"
             else:
                 raise ValueError(f"Path for {name} is not specified.")
         if name in ["flux.1-canny-dev", "flux.1-depth-dev"]:
             pipeline = FluxControlPipeline.from_pretrained(path, torch_dtype=dtype)
         elif name == "flux.1-fill-dev":
             pipeline = FluxFillPipeline.from_pretrained(path, torch_dtype=dtype)
+        elif name == "flux.1-kontext-dev" and path.endswith(".safetensors"):
+            # FLUX.1-Kontext-devの.safetensors（transformerのみ）を読み込んで置き換え
+            from diffusers import FluxKontextPipeline
+            from safetensors.torch import load_file
+
+            pipeline = FluxKontextPipeline.from_pretrained("black-forest-labs/FLUX.1-Kontext-dev", torch_dtype=dtype)
+            transformer_state_dict = load_file(path)
+            pipeline.transformer.load_state_dict(transformer_state_dict, strict=False)
         elif name.startswith("sana-"):
             if dtype == torch.bfloat16:
                 pipeline = SanaPipeline.from_pretrained(path, variant="bf16", torch_dtype=dtype, use_safetensors=True)
@@ -357,6 +383,38 @@ class DiffusionPipelineConfig:
                 pipeline.text_encoder.to(dtype)
             else:
                 pipeline = SanaPipeline.from_pretrained(path, torch_dtype=dtype)
+        elif name == "flux.1-dev" and path.endswith(".safetensors"):
+            # FLUX.1-devの.safetensorsファイル（UNetのみ）を読み込んで置き換え
+            from diffusers import FluxPipeline
+            from safetensors.torch import load_file
+            # ベースパイプラインを読み込む
+            pipeline = FluxPipeline.from_pretrained("black-forest-labs/FLUX.1-dev", torch_dtype=dtype)
+            # UNetの重みを.safetensorsファイルから読み込んで置き換え
+            unet_state_dict = load_file(path)
+            pipeline.transformer.load_state_dict(unet_state_dict, strict=False)
+        elif name == "flux.1-kontext-dev":
+            from diffusers import FluxKontextPipeline
+
+            pipeline = FluxKontextPipeline.from_pretrained(path, torch_dtype=dtype)
+        elif name in ("qwen-image", "qwenimage") or name.startswith("qwenimage"):
+            # Use a custom pipeline that can force txt_seq_lens via `target_seq_len`.
+            from ..qwenimage import QwenImagePipelineWithSeqLen
+
+            pipeline = QwenImagePipelineWithSeqLen.from_pretrained(path, torch_dtype=dtype)
+        elif name in ("qwen-image-edit-2511", "qwenimage-edit-2511"):
+            from ..qwenimage import QwenImageEditPipelineWithSeqLen
+
+            pipeline = QwenImageEditPipelineWithSeqLen.from_pretrained(path, torch_dtype=dtype)
+        elif name in (
+            "qwen-image-edit",
+            "qwenimage-edit",
+            "qwen-image-edit-2509",
+            "qwenimage-edit-2509",
+        ) or name.startswith("qwenimage-edit"):
+            # Use a custom pipeline that can force txt_seq_lens via `target_seq_len`.
+            from ..qwenimage import QwenImageEditPipelineWithSeqLen
+
+            pipeline = QwenImageEditPipelineWithSeqLen.from_pretrained(path, torch_dtype=dtype)
         else:
             pipeline = AutoPipelineForText2Image.from_pretrained(path, torch_dtype=dtype)
         pipeline = pipeline.to(device)

@@ -1,0 +1,68 @@
+pipeline:
+  name: sdxl
+  path: stabilityai/stable-diffusion-xl-base-1.0
+  unet_path: D:/nu/bluePencilXL_v031.safetensors
+  dtype: torch.bfloat16
+eval:
+  num_steps: 50
+  guidance_scale: 7.5
+  protocol: ddim{num_steps}-g{guidance_scale}
+quant:
+  calib:
+    batch_size: 16
+  wgts:
+    enable_calib_range: false
+    calib_range:
+      element_batch_size: 64
+      sample_batch_size: 16
+      element_size: 512
+      sample_size: -1
+    low_rank:
+      rank: 128
+      compensate: true
+      num_iters: 1
+      sample_batch_size: 16
+      sample_size: -1
+    skips: 
+    - embed
+    - resblock_shortcut
+    - resblock_time_proj
+    - transformer_proj_in
+    - transformer_proj_out
+    - down_sample
+    - up_sample
+  ipts:
+    calib_range:
+      element_batch_size: 64
+      sample_batch_size: 16
+      element_size: 512
+      sample_size: -1
+    skips: 
+    - embed
+    - resblock_shortcut
+    - resblock_time_proj
+    - transformer_proj_in
+    - transformer_proj_out
+    - transformer_norm
+    - transformer_add_norm
+    - down_sample
+    - up_sample
+  opts:
+    calib_range:
+      element_batch_size: 64
+      sample_batch_size: 16
+      element_size: 512
+      sample_size: -1
+  enable_smooth: false
+  smooth:
+    enable_proj: false
+    enable_attn: false
+    proj:
+      element_batch_size: -1
+      sample_batch_size: 16
+      element_size: -1
+      sample_size: -1
+    attn:
+      sample_batch_size: 16
+      sample_size: -1
+

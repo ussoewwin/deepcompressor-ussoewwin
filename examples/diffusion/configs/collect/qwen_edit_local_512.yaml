@@ -1,0 +1,7 @@
+collect:
+  root: datasets
+  dataset_name: qwen_edit_local_512
+  data_path: D:\nu\deepcompressor\qwen_calibration_dataset_512\dataset.jsonl
+  num_samples: 512
+
+

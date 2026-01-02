@@ -336,5 +336,5 @@ class LongbenchScorer:
 
 
 # Initialize the evaluator task2prompt by loading the json file
-with open(os.path.join(os.path.dirname(__file__), "task2prompt.json")) as f:
+with open(os.path.join(os.path.dirname(__file__), "task2prompt.json"), encoding="utf-8") as f:
     LongbenchEvaluator.task2prompt = json.load(f)

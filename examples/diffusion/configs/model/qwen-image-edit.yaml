@@ -1,0 +1,70 @@
+pipeline:
+  name: qwenimage-edit
+  dtype: torch.bfloat16
+eval:
+  num_steps: 50
+  guidance_scale: 1.0
+  true_cfg_scale: 4.0
+  negative_prompt: " "
+  txt_seq_lens: 512
+  protocol: fmeuler{num_steps}-g{guidance_scale}
+quant:
+  calib:
+    batch_size: 1
+  wgts:
+    calib_range:
+      element_batch_size: 64
+      sample_batch_size: 1
+      element_size: 512
+      sample_size: -1
+    low_rank:
+      sample_batch_size: 1
+      sample_size: -1
+      rank: 128
+      compensate: true
+      num_iters: 1
+    skips:
+    - embed
+    - resblock_shortcut
+    - resblock_time_proj
+    - transformer_proj_in
+    - transformer_proj_out
+    - transformer_mod
+    - down_sample
+    - up_sample
+    enable_calib_range: false
+  ipts:
+    calib_range:
+      element_batch_size: 64
+      sample_batch_size: 1
+      element_size: 512
+      sample_size: -1
+    skips:
+    - embed
+    - resblock_shortcut
+    - resblock_time_proj
+    - transformer_proj_in
+    - transformer_proj_out
+    - transformer_norm
+    - transformer_add_norm
+    - transformer_mod
+    - down_sample
+    - up_sample
+  opts:
+    calib_range:
+      element_batch_size: 64
+      sample_batch_size: 1
+      element_size: 512
+      sample_size: -1
+  smooth:
+    proj:
+      element_batch_size: -1
+      sample_batch_size: 1
+      element_size: -1
+      sample_size: -1
+    attn:
+      sample_batch_size: 1
+      sample_size: -1
+  enable_smooth: false
+
+

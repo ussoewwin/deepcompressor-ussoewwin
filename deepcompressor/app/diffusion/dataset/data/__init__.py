@@ -45,6 +45,28 @@ def get_dataset(
         "token": True,
         "max_dataset_size": max_dataset_size,
     }
+    # Local JSON/JSONL dataset support (e.g., Qwen-Image-Edit calibration datasets).
+    # Expected rows: {"filename": "...", "prompt": "...", "image": "images/xxx.png", ...}
+    if name.endswith((".jsonl", ".json")):
+        data_file = os.path.abspath(name)
+        data_root = os.path.dirname(data_file)
+        dataset = datasets.load_dataset("json", data_files=data_file, split="train")
+
+        def _normalize_row(row):
+            p = row.get("image", None) or row.get("image_path", None)
+            if isinstance(p, str) and p:
+                # Accept both Windows and POSIX separators in jsonl, and resolve relative to jsonl dir.
+                p = p.replace("\\\\", "/").replace("\\", "/")
+                if not os.path.isabs(p):
+                    p = os.path.join(data_root, p)
+                row["image_path"] = p
+            return row
+
+        dataset = dataset.map(_normalize_row)
+        if "image_path" in dataset.column_names:
+            dataset = dataset.cast_column("image_path", datasets.Image())
+            # Provide a unified column name for downstream code (batch["image"]).
+            dataset = dataset.rename_column("image_path", "image")
     if name.endswith((".yaml", ".yml")):
         dataset = datasets.Dataset.from_dict(
             load_dataset_yaml(name, max_dataset_size=max_dataset_size, repeat=repeat),

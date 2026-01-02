@@ -1,5 +1,6 @@
 pipeline:
   name: flux.1-dev
+  path: ./root/models/flux1-dev.safetensors
   dtype: torch.bfloat16
 eval:
   num_steps: 50
@@ -17,6 +18,9 @@ quant:
     low_rank:
       sample_batch_size: 16
       sample_size: -1
+      rank: 128
+      compensate: true
+      num_iters: 1
     skips: 
     - embed
     - resblock_shortcut
@@ -25,6 +29,7 @@ quant:
     - transformer_proj_out
     - down_sample
     - up_sample
+    enable_calib_range: false
   ipts:
     calib_range:
       element_batch_size: 64
@@ -56,3 +61,5 @@ quant:
     attn:
       sample_batch_size: 16
       sample_size: -1
+  enable_smooth: false
+

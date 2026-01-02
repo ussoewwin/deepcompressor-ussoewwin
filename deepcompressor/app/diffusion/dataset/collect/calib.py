@@ -69,7 +69,81 @@ def collect(config: DiffusionPtqRunConfig, dataset: datasets.Dataset):
             else:
                 pipeline_kwargs["control_image"] = controls
 
-        result_images = pipeline(prompts, generator=generators, **pipeline_kwargs).images
+        # Qwen-Image needs fixed-length text sequence handling (txt_seq_lens).
+        pipeline_name = getattr(config.pipeline, "name", "") or ""
+        is_qwenimage = pipeline_name in ("qwenimage", "qwen-image") or pipeline_name.startswith("qwenimage")
+        is_qwenimage_edit = pipeline_name in ("qwenimage-edit", "qwen-image-edit") or pipeline_name.startswith("qwenimage-edit")
+        is_flux_kontext = pipeline_name == "flux.1-kontext-dev"
+        if is_qwenimage_edit:
+            if "image" not in batch:
+                raise ValueError("Qwen-Image-Edit calibration requires `image` in dataset batch.")
+            target_seq_len = getattr(config.eval, "txt_seq_lens", None) or 64
+            negative_prompt = getattr(config.eval, "negative_prompt", "") or " "
+            true_cfg_scale = getattr(config.eval, "true_cfg_scale", None) or 4.0
+            pipeline_kwargs = dict(pipeline_kwargs)
+            pipeline_kwargs["image"] = batch["image"]
+            result_images = pipeline(  # type: ignore[call-arg]
+                prompt=prompts,
+                negative_prompt=negative_prompt,
+                generator=generators,
+                target_seq_len=int(target_seq_len),
+                true_cfg_scale=float(true_cfg_scale),
+                **pipeline_kwargs,
+            ).images
+        elif is_flux_kontext:
+            if "image" not in batch:
+                raise ValueError("FLUX.1-Kontext calibration requires `image` in dataset batch.")
+            pipeline_kwargs = dict(pipeline_kwargs)
+            pipeline_kwargs["image"] = batch["image"]
+            # Kontext pipeline uses image+prompt.
+            result_images = pipeline(  # type: ignore[call-arg]
+                prompt=prompts,
+                generator=generators,
+                **pipeline_kwargs,
+            ).images
+        elif is_qwenimage and hasattr(pipeline, "encode_prompt"):
+            target_seq_len = getattr(config.eval, "txt_seq_lens", None) or 64
+            negative_prompt = getattr(config.eval, "negative_prompt", "") or " "
+
+            prompt_embeds, prompt_embeds_mask = pipeline.encode_prompt(  # type: ignore[attr-defined]
+                prompt=prompts,
+                prompt_embeds=None,
+                prompt_embeds_mask=None,
+                device=pipeline.device,
+                num_images_per_prompt=1,
+                max_sequence_length=512,
+            )
+            cur = int(prompt_embeds.shape[1])
+            pad_len = max(int(target_seq_len) - cur, 0)
+            if pad_len:
+                prompt_embeds = torch.nn.functional.pad(prompt_embeds, (0, 0, 0, pad_len), value=0)
+                prompt_embeds_mask = torch.nn.functional.pad(prompt_embeds_mask, (0, pad_len), value=0)
+
+            negative_prompt_embeds, negative_prompt_embeds_mask = pipeline.encode_prompt(  # type: ignore[attr-defined]
+                prompt=negative_prompt,
+                prompt_embeds=None,
+                prompt_embeds_mask=None,
+                device=pipeline.device,
+                num_images_per_prompt=1,
+                max_sequence_length=512,
+            )
+            cur = int(negative_prompt_embeds.shape[1])
+            pad_len = max(int(target_seq_len) - cur, 0)
+            if pad_len:
+                negative_prompt_embeds = torch.nn.functional.pad(negative_prompt_embeds, (0, 0, 0, pad_len), value=0)
+                negative_prompt_embeds_mask = torch.nn.functional.pad(negative_prompt_embeds_mask, (0, pad_len), value=0)
+
+            result_images = pipeline(  # type: ignore[call-arg]
+                prompt_embeds=prompt_embeds,
+                prompt_embeds_mask=prompt_embeds_mask,
+                negative_prompt_embeds=negative_prompt_embeds,
+                negative_prompt_embeds_mask=negative_prompt_embeds_mask,
+                generator=generators,
+                target_seq_len=int(target_seq_len),
+                **pipeline_kwargs,
+            ).images
+        else:
+            result_images = pipeline(prompts, generator=generators, **pipeline_kwargs).images
         num_guidances = (len(caches) // batch_size) // config.eval.num_steps
         num_steps = len(caches) // (batch_size * num_guidances)
         assert (

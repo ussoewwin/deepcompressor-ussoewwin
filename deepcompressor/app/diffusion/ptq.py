@@ -4,11 +4,19 @@ import os
 import pprint
 import traceback
 
+import safetensors
+import safetensors.torch
 import torch
 from diffusers import DiffusionPipeline
 
+import inspect
+
 from deepcompressor.app.llm.nn.patch import patch_attention, patch_gemma_rms_norm
 from deepcompressor.app.llm.ptq import ptq as llm_ptq
+from deepcompressor.backend.nunchaku.convert import (
+    convert_to_nunchaku_flux_state_dicts,
+    convert_to_nunchaku_w4x4y16_linear_state_dict,
+)
 from deepcompressor.utils import tools
 
 from .config import DiffusionPtqCacheConfig, DiffusionPtqRunConfig, DiffusionQuantCacheConfig, DiffusionQuantConfig
@@ -24,6 +32,408 @@ from .quant import (
 __all__ = ["ptq"]
 
 
+def _load_safetensors_state_dict(path: str) -> dict[str, torch.Tensor]:
+    state_dict: dict[str, torch.Tensor] = {}
+    with safetensors.safe_open(path, framework="pt", device="cpu") as f:
+        for k in f.keys():
+            state_dict[k] = f.get_tensor(k)
+    return state_dict
+
+
+def _looks_like_comfyui_or_sd_ckpt(state_dict: dict[str, torch.Tensor]) -> bool:
+    # Typical original SD/ComfyUI checkpoints include keys like:
+    #   model.diffusion_model.*
+    # while Diffusers UNet state dict uses down_blocks/mid_block/up_blocks etc.
+    for k in state_dict.keys():
+        if k.startswith("model.diffusion_model."):
+            return True
+    return False
+
+
+def _convert_single_file_to_diffusers_unet_state_dict(
+    *, ckpt_path: str, torch_dtype: torch.dtype
+) -> dict[str, torch.Tensor]:
+    """
+    Best-effort conversion for "single-file" SDXL checkpoints into a Diffusers UNet state_dict.
+
+    This relies on Diffusers' `from_single_file` conversion logic when available.
+    """
+    # NOTE: We intentionally avoid importing StableDiffusionXLPipeline at module import time,
+    # because diffusers versions vary across environments.
+    try:
+        from diffusers import StableDiffusionXLPipeline  # type: ignore
+    except Exception as e:  # pragma: no cover
+        raise RuntimeError(
+            "Your diffusers does not provide StableDiffusionXLPipeline; cannot convert a ComfyUI/original SDXL checkpoint "
+            "to a Diffusers UNet state_dict. Please update diffusers or provide a Diffusers-format UNet safetensors."
+        ) from e
+
+    if not hasattr(StableDiffusionXLPipeline, "from_single_file"):
+        raise RuntimeError(
+            "Your diffusers version does not support StableDiffusionXLPipeline.from_single_file; "
+            "cannot convert a ComfyUI/original SDXL checkpoint. Please update diffusers."
+        )
+
+    # Many diffusers versions accept slightly different kwargs; build kwargs dynamically.
+    kwargs: dict[str, object] = {"torch_dtype": torch_dtype}
+    try:
+        sig = inspect.signature(StableDiffusionXLPipeline.from_single_file)
+        if "use_safetensors" in sig.parameters:
+            kwargs["use_safetensors"] = True
+        if "safety_checker" in sig.parameters:
+            kwargs["safety_checker"] = None
+        if "feature_extractor" in sig.parameters:
+            kwargs["feature_extractor"] = None
+        if "requires_safety_checker" in sig.parameters:
+            kwargs["requires_safety_checker"] = False
+    except Exception:
+        # If signature inspection fails, just try minimal kwargs.
+        pass
+
+    pipe = StableDiffusionXLPipeline.from_single_file(ckpt_path, **kwargs)  # type: ignore[arg-type]
+    try:
+        # Ensure CPU tensors for downstream concatenation / save_file.
+        return {k: v.detach().cpu() for k, v in pipe.unet.state_dict().items()}
+    finally:
+        try:
+            del pipe
+        except Exception:
+            pass
+        gc.collect()
+        torch.cuda.empty_cache()
+
+
+def _sdxl_export_build_metadata(*, unet, rank: int, precision: str) -> dict[str, str]:
+    # NunchakuModelLoaderMixin expects metadata["config"] to be json.
+    unet_cfg = getattr(unet, "config", None)
+    if hasattr(unet_cfg, "to_dict"):
+        unet_cfg = unet_cfg.to_dict()
+    if not isinstance(unet_cfg, dict):
+        raise RuntimeError("Failed to read UNet config for Nunchaku export (unet.config is not dict-like).")
+    return {
+        "config": json.dumps(unet_cfg),
+        "quantization_config": json.dumps({"rank": int(rank), "precision": str(precision)}),
+    }
+
+
+def _sdxl_export_to_nunchaku_single_safetensors(
+    *,
+    output_path: str,
+    orig_unet_path: str,
+    dequant_unet_state: dict[str, torch.Tensor],
+    scale_state: dict[str, torch.Tensor],
+    branch_state: dict[str, dict[str, torch.Tensor]] | None,
+    rank: int,
+    precision: str,
+    torch_dtype: torch.dtype,
+    unet,
+) -> None:  # noqa: C901
+    """
+    Export a single safetensors file that can be loaded by:
+      nunchaku.models.unets.unet_sdxl.NunchakuSDXLUNet2DConditionModel.from_pretrained(...)
+    """
+    logger = tools.logging.getLogger(__name__)
+    assert orig_unet_path, "orig_unet_path is required for SDXL Nunchaku export."
+    assert os.path.exists(orig_unet_path), f"orig_unet_path does not exist: {orig_unet_path}"
+
+    # Load float UNet weights:
+    # - If user passed a ComfyUI/original SDXL checkpoint, convert it to Diffusers UNet state_dict.
+    # - Otherwise, treat it as a Diffusers-format UNet safetensors and filter to UNet keys.
+    orig_state_raw = _load_safetensors_state_dict(orig_unet_path)
+    if _looks_like_comfyui_or_sd_ckpt(orig_state_raw):
+        orig_state = _convert_single_file_to_diffusers_unet_state_dict(ckpt_path=orig_unet_path, torch_dtype=torch_dtype)
+    else:
+        # Keep only UNet keys (user might pass a file that contains extra tensors).
+        expected = set(unet.state_dict().keys()) if hasattr(unet, "state_dict") else None
+        if expected:
+            orig_state = {k: v for k, v in orig_state_raw.items() if k in expected}
+        else:
+            orig_state = orig_state_raw
+    out_state: dict[str, torch.Tensor] = dict(orig_state)  # start from float UNet weights
+
+    # Helpers
+    def _del(k: str) -> None:
+        if k in out_state:
+            del out_state[k]
+
+    def _get_scale(module_name: str) -> tuple[torch.Tensor, torch.Tensor | None]:
+        s0 = scale_state.get(f"{module_name}.weight.scale.0", None)
+        if s0 is None:
+            raise KeyError(f"Missing scale for {module_name}: {module_name}.weight.scale.0")
+        if not isinstance(s0, torch.Tensor):
+            # scale_state_dict can store Python floats for some quantizers.
+            s0 = torch.tensor([float(s0)], dtype=torch_dtype, device="cpu")
+        s1 = scale_state.get(f"{module_name}.weight.scale.1", None)
+        if s1 is not None and not isinstance(s1, torch.Tensor):
+            s1 = torch.tensor([float(s1)], dtype=torch_dtype, device="cpu")
+        return s0, s1
+
+    def _get_branch(module_name: str) -> tuple[torch.Tensor, torch.Tensor] | None:
+        if not branch_state:
+            return None
+        b = branch_state.get(module_name, None)
+        if not b:
+            return None
+        if "a.weight" not in b or "b.weight" not in b:
+            return None
+        return b["a.weight"], b["b.weight"]
+
+    def _ensure_wcscales(prefix: str, converted: dict[str, torch.Tensor], out_features: int) -> None:
+        # SVDQW4A4Linear(nvfp4) always has .wcscales parameter; SDXL loader does not patch missing keys.
+        if precision == "nvfp4" and "wcscales" not in converted:
+            converted["wcscales"] = torch.ones(out_features, dtype=torch_dtype, device="cpu")
+
+    float_point = precision == "nvfp4"
+
+    # Collect transformer block prefixes (Diffusers SDXL UNet naming).
+    block_prefixes = sorted(
+        {k.split(".attn1.to_q.weight")[0] for k in orig_state.keys() if k.endswith(".attn1.to_q.weight")}
+    )
+    logger.info(f"* Exporting Nunchaku SDXL UNet safetensors: found {len(block_prefixes)} transformer blocks")
+
+    for block in block_prefixes:
+        # --- attn1: self-attention, Nunchaku fuses qkv into to_qkv ---
+        q = f"{block}.attn1.to_q"
+        k = f"{block}.attn1.to_k"
+        v = f"{block}.attn1.to_v"
+        q_w = orig_state[f"{q}.weight"]
+        k_w = orig_state[f"{k}.weight"]
+        v_w = orig_state[f"{v}.weight"]
+        q_b = orig_state.get(f"{q}.bias", None)
+        k_b = orig_state.get(f"{k}.bias", None)
+        v_b = orig_state.get(f"{v}.bias", None)
+        fused_w = torch.cat([q_w, k_w, v_w], dim=0)
+        fused_b = None
+        if q_b is not None and k_b is not None and v_b is not None:
+            fused_b = torch.cat([q_b, k_b, v_b], dim=0)
+
+        # Dequant (float) weights from DeepCompressor run, for residual SVD (to build fused low-rank branch)
+        dq_q_w = dequant_unet_state[f"{q}.weight"]
+        dq_k_w = dequant_unet_state[f"{k}.weight"]
+        dq_v_w = dequant_unet_state[f"{v}.weight"]
+        dq_fused_w = torch.cat([dq_q_w, dq_k_w, dq_v_w], dim=0)
+        residual = (fused_w.to(dtype=torch.float32) - dq_fused_w.to(dtype=torch.float32)).to(dtype=torch.float16)
+        # SVD rank-128 (R128) low-rank branch: residual ≈ (U*S) @ V^T
+        # LowRankBranch stores a.weight=V^T[:r] (rank, in_features), b.weight=U[:,:r]*S[:r] (out, rank)
+        u, s, vh = torch.linalg.svd(residual.double())
+        b_w = (u[:, :rank] * s[:rank]).to(dtype=torch_dtype, device="cpu")
+        a_w = vh[:rank].to(dtype=torch_dtype, device="cpu")
+
+        q_s0, q_s1 = _get_scale(q)
+        k_s0, k_s1 = _get_scale(k)
+        v_s0, v_s1 = _get_scale(v)
+        # When q/k/v are stored with per-tensor scale (numel()==1), fusing requires
+        # switching to per-channel scale, same as deepcompressor.backend.nunchaku.convert.py
+        if q_s0.numel() == 1:
+            if not (k_s0.numel() == 1 and v_s0.numel() == 1):
+                raise AssertionError("Inconsistent per-tensor scales across q/k/v (scale.0).")
+            fused_s0 = torch.cat(
+                [
+                    q_s0.view(-1).expand(q_w.shape[0]).reshape(q_w.shape[0], 1, 1, 1),
+                    k_s0.view(-1).expand(k_w.shape[0]).reshape(k_w.shape[0], 1, 1, 1),
+                    v_s0.view(-1).expand(v_w.shape[0]).reshape(v_w.shape[0], 1, 1, 1),
+                ],
+                dim=0,
+            )
+        else:
+            fused_s0 = torch.cat([q_s0, k_s0, v_s0], dim=0)
+        fused_s1 = None
+        if q_s1 is not None or k_s1 is not None or v_s1 is not None:
+            if q_s1 is None or k_s1 is None or v_s1 is None:
+                raise KeyError(f"Missing subscale for fused qkv in {block} (scale.1 inconsistent).")
+            if q_s1.numel() == 1:
+                if not (k_s1.numel() == 1 and v_s1.numel() == 1):
+                    raise AssertionError("Inconsistent per-tensor scales across q/k/v (scale.1).")
+                fused_s1 = torch.cat(
+                    [
+                        q_s1.view(-1).expand(q_w.shape[0]).reshape(q_w.shape[0], 1, 1, 1),
+                        k_s1.view(-1).expand(k_w.shape[0]).reshape(k_w.shape[0], 1, 1, 1),
+                        v_s1.view(-1).expand(v_w.shape[0]).reshape(v_w.shape[0], 1, 1, 1),
+                    ],
+                    dim=0,
+                )
+            else:
+                fused_s1 = torch.cat([q_s1, k_s1, v_s1], dim=0)
+
+        converted = convert_to_nunchaku_w4x4y16_linear_state_dict(
+            weight=fused_w.to(dtype=torch_dtype, device="cpu"),
+            scale=fused_s0.to(device="cpu"),
+            bias=fused_b.to(dtype=torch_dtype, device="cpu") if fused_b is not None else None,
+            smooth=None,
+            lora=(a_w, b_w),
+            float_point=float_point,
+            subscale=fused_s1.to(device="cpu") if fused_s1 is not None else None,
+        )
+        _ensure_wcscales(f"{block}.attn1.to_qkv", converted, fused_w.shape[0])
+
+        # Remove original to_q/to_k/to_v params (will not exist in Nunchaku patched model)
+        for base in (q, k, v):
+            _del(f"{base}.weight")
+            _del(f"{base}.bias")
+
+        # Write fused to_qkv params
+        fused_prefix = f"{block}.attn1.to_qkv"
+        for kk, vv in converted.items():
+            out_state[f"{fused_prefix}.{kk}"] = vv
+
+        # --- attn1: to_out.0 quantized ---
+        out0 = f"{block}.attn1.to_out.0"
+        out0_w = orig_state[f"{out0}.weight"]
+        out0_b = orig_state.get(f"{out0}.bias", None)
+        out0_s0, out0_s1 = _get_scale(out0)
+        out0_branch = _get_branch(out0)
+        converted = convert_to_nunchaku_w4x4y16_linear_state_dict(
+            weight=out0_w.to(dtype=torch_dtype, device="cpu"),
+            scale=out0_s0.to(device="cpu"),
+            bias=out0_b.to(dtype=torch_dtype, device="cpu") if out0_b is not None else None,
+            smooth=None,
+            lora=out0_branch,
+            float_point=float_point,
+            subscale=out0_s1.to(device="cpu") if out0_s1 is not None else None,
+        )
+        _ensure_wcscales(out0, converted, out0_w.shape[0])
+        _del(f"{out0}.weight")
+        _del(f"{out0}.bias")
+        for kk, vv in converted.items():
+            out_state[f"{out0}.{kk}"] = vv
+
+        # --- attn2: cross-attention: Nunchaku quantizes to_q only; to_k/to_v stay float ---
+        ca_q = f"{block}.attn2.to_q"
+        ca_q_w = orig_state[f"{ca_q}.weight"]
+        ca_q_b = orig_state.get(f"{ca_q}.bias", None)
+        ca_q_s0, ca_q_s1 = _get_scale(ca_q)
+        ca_q_branch = _get_branch(ca_q)
+        converted = convert_to_nunchaku_w4x4y16_linear_state_dict(
+            weight=ca_q_w.to(dtype=torch_dtype, device="cpu"),
+            scale=ca_q_s0.to(device="cpu"),
+            bias=ca_q_b.to(dtype=torch_dtype, device="cpu") if ca_q_b is not None else None,
+            smooth=None,
+            lora=ca_q_branch,
+            float_point=float_point,
+            subscale=ca_q_s1.to(device="cpu") if ca_q_s1 is not None else None,
+        )
+        _ensure_wcscales(ca_q, converted, ca_q_w.shape[0])
+        _del(f"{ca_q}.weight")
+        _del(f"{ca_q}.bias")
+        for kk, vv in converted.items():
+            out_state[f"{ca_q}.{kk}"] = vv
+
+        ca_out0 = f"{block}.attn2.to_out.0"
+        ca_out0_w = orig_state[f"{ca_out0}.weight"]
+        ca_out0_b = orig_state.get(f"{ca_out0}.bias", None)
+        ca_out0_s0, ca_out0_s1 = _get_scale(ca_out0)
+        ca_out0_branch = _get_branch(ca_out0)
+        converted = convert_to_nunchaku_w4x4y16_linear_state_dict(
+            weight=ca_out0_w.to(dtype=torch_dtype, device="cpu"),
+            scale=ca_out0_s0.to(device="cpu"),
+            bias=ca_out0_b.to(dtype=torch_dtype, device="cpu") if ca_out0_b is not None else None,
+            smooth=None,
+            lora=ca_out0_branch,
+            float_point=float_point,
+            subscale=ca_out0_s1.to(device="cpu") if ca_out0_s1 is not None else None,
+        )
+        _ensure_wcscales(ca_out0, converted, ca_out0_w.shape[0])
+        _del(f"{ca_out0}.weight")
+        _del(f"{ca_out0}.bias")
+        for kk, vv in converted.items():
+            out_state[f"{ca_out0}.{kk}"] = vv
+
+        # --- ff: quantize typical SDXL FeedForward linears ---
+        ff_fc1 = f"{block}.ff.net.0.proj"
+        if f"{ff_fc1}.weight" in orig_state:
+            ff_fc1_w = orig_state[f"{ff_fc1}.weight"]
+            ff_fc1_b = orig_state.get(f"{ff_fc1}.bias", None)
+            ff_fc1_s0, ff_fc1_s1 = _get_scale(ff_fc1)
+            ff_fc1_branch = _get_branch(ff_fc1)
+            converted = convert_to_nunchaku_w4x4y16_linear_state_dict(
+                weight=ff_fc1_w.to(dtype=torch_dtype, device="cpu"),
+                scale=ff_fc1_s0.to(device="cpu"),
+                bias=ff_fc1_b.to(dtype=torch_dtype, device="cpu") if ff_fc1_b is not None else None,
+                smooth=None,
+                lora=ff_fc1_branch,
+                float_point=float_point,
+                subscale=ff_fc1_s1.to(device="cpu") if ff_fc1_s1 is not None else None,
+            )
+            _ensure_wcscales(ff_fc1, converted, ff_fc1_w.shape[0])
+            _del(f"{ff_fc1}.weight")
+            _del(f"{ff_fc1}.bias")
+            for kk, vv in converted.items():
+                out_state[f"{ff_fc1}.{kk}"] = vv
+
+        ff_fc2 = f"{block}.ff.net.2"
+        if f"{ff_fc2}.weight" in orig_state:
+            ff_fc2_w = orig_state[f"{ff_fc2}.weight"]
+            ff_fc2_b = orig_state.get(f"{ff_fc2}.bias", None)
+            ff_fc2_s0, ff_fc2_s1 = _get_scale(ff_fc2)
+            ff_fc2_branch = _get_branch(ff_fc2)
+            converted = convert_to_nunchaku_w4x4y16_linear_state_dict(
+                weight=ff_fc2_w.to(dtype=torch_dtype, device="cpu"),
+                scale=ff_fc2_s0.to(device="cpu"),
+                bias=ff_fc2_b.to(dtype=torch_dtype, device="cpu") if ff_fc2_b is not None else None,
+                smooth=None,
+                lora=ff_fc2_branch,
+                float_point=float_point,
+                subscale=ff_fc2_s1.to(device="cpu") if ff_fc2_s1 is not None else None,
+            )
+            _ensure_wcscales(ff_fc2, converted, ff_fc2_w.shape[0])
+            _del(f"{ff_fc2}.weight")
+            _del(f"{ff_fc2}.bias")
+            for kk, vv in converted.items():
+                out_state[f"{ff_fc2}.{kk}"] = vv
+
+    os.makedirs(os.path.dirname(os.path.abspath(output_path)) or ".", exist_ok=True)
+    metadata = _sdxl_export_build_metadata(unet=unet, rank=rank, precision=precision)
+    logger.info(f"* Saving Nunchaku SDXL UNet safetensors to {output_path}")
+    safetensors.torch.save_file(out_state, output_path, metadata=metadata)
+
+
+def _flux_export_to_nunchaku_single_safetensors(
+    *,
+    output_path: str,
+    dequant_state: dict[str, torch.Tensor],
+    scale_state: dict[str, torch.Tensor],
+    smooth_state: dict[str, torch.Tensor] | None,
+    branch_state: dict[str, dict[str, torch.Tensor]] | None,
+    transformer,
+    float_point: bool = False,
+) -> None:
+    """
+    Export a single safetensors file that can be loaded by:
+      nunchaku.models.transformers.transformer_flux.NunchakuFluxTransformer2dModel.from_pretrained(...)
+    """
+    logger = tools.logging.getLogger(__name__)
+    logger.info("* Exporting Nunchaku FLUX.1-dev transformer safetensors")
+
+    # Convert to Nunchaku format using the existing conversion function
+    converted_state_dict, other_state_dict = convert_to_nunchaku_flux_state_dicts(
+        state_dict=dequant_state,
+        scale_dict=scale_state,
+        smooth_dict=smooth_state or {},
+        branch_dict=branch_state or {},
+        float_point=float_point,
+    )
+
+    # Merge converted and other state dicts
+    out_state: dict[str, torch.Tensor] = {}
+    out_state.update(converted_state_dict)
+    out_state.update(other_state_dict)
+
+    # Build metadata
+    transformer_cfg = getattr(transformer, "config", None)
+    if hasattr(transformer_cfg, "to_dict"):
+        transformer_cfg = transformer_cfg.to_dict()
+    if not isinstance(transformer_cfg, dict):
+        raise RuntimeError("Failed to read transformer config for Nunchaku export (transformer.config is not dict-like).")
+    metadata = {
+        "config": json.dumps(transformer_cfg),
+        "quantization_config": json.dumps({"float_point": bool(float_point)}),
+    }
+
+    os.makedirs(os.path.dirname(os.path.abspath(output_path)) or ".", exist_ok=True)
+    logger.info(f"* Saving Nunchaku FLUX.1-dev transformer safetensors to {output_path}")
+    safetensors.torch.save_file(out_state, output_path, metadata=metadata)
+
+
 def ptq(  # noqa: C901
     model: DiffusionModelStruct,
     config: DiffusionQuantConfig,
@@ -32,6 +442,8 @@ def ptq(  # noqa: C901
     save_dirpath: str = "",
     copy_on_save: bool = False,
     save_model: bool = False,
+    export_nunchaku_sdxl: dict | None = None,
+    export_nunchaku_flux: dict | None = None,
 ) -> DiffusionModelStruct:
     """Post-training quantization of a diffusion model.
 
@@ -195,7 +607,7 @@ def ptq(  # noqa: C901
             config,
             quantizer_state_dict=quantizer_state_dict,
             branch_state_dict=branch_state_dict,
-            return_with_scale_state_dict=bool(save_dirpath),
+            return_with_scale_state_dict=bool(save_dirpath) or bool(save_model) or bool(export_nunchaku_sdxl) or bool(export_nunchaku_flux),
         )
         if not quantizer_load_from and cache and cache.dirpath.wgts:
             logger.info(f"- Saving weight settings to {cache.path.wgts}")
@@ -224,6 +636,63 @@ def ptq(  # noqa: C901
             logger.info(f"- Saving model to {save_dirpath}")
             torch.save(scale_state_dict, os.path.join(save_dirpath, "scale.pt"))
             torch.save(model.module.state_dict(), os.path.join(save_dirpath, "model.pt"))
+        if export_nunchaku_sdxl:
+            # Export final Nunchaku SDXL UNet checkpoint (single-file safetensors).
+            # This is the intended deliverable for ComfyUI/Nunchaku usage.
+            export_path = export_nunchaku_sdxl["output_path"]
+            orig_unet_path = export_nunchaku_sdxl["orig_unet_path"]
+            unet = export_nunchaku_sdxl["unet"]
+            rank = int(export_nunchaku_sdxl["rank"])
+            precision = export_nunchaku_sdxl["precision"]
+            torch_dtype = export_nunchaku_sdxl["torch_dtype"]
+            # dequantized weights are stored in the current in-memory model
+            dequant_state = {k: v.detach().cpu() for k, v in model.module.state_dict().items()}
+            _sdxl_export_to_nunchaku_single_safetensors(
+                output_path=export_path,
+                orig_unet_path=orig_unet_path,
+                dequant_unet_state=dequant_state,
+                scale_state=scale_state_dict,
+                branch_state=branch_state_dict,
+                rank=rank,
+                precision=precision,
+                torch_dtype=torch_dtype,
+                unet=unet,
+            )
+            if export_nunchaku_sdxl.get("cleanup_run_cache", False) and save_dirpath:
+                try:
+                    import shutil
+
+                    shutil.rmtree(save_dirpath, ignore_errors=True)
+                except Exception:
+                    pass
+        if export_nunchaku_flux:
+            # Export final Nunchaku FLUX.1-dev transformer checkpoint (single-file safetensors).
+            # This is the intended deliverable for ComfyUI/Nunchaku usage.
+            export_path = export_nunchaku_flux["output_path"]
+            transformer = export_nunchaku_flux["transformer"]
+            float_point = export_nunchaku_flux.get("float_point", False)
+            # dequantized weights are stored in the current in-memory model
+            dequant_state = {k: v.detach().cpu() for k, v in model.module.state_dict().items()}
+            # Load smooth state if available
+            smooth_state = None
+            if config.enabled_smooth and cache and cache.path.smooth and os.path.exists(cache.path.smooth):
+                smooth_state = torch.load(cache.path.smooth, map_location="cpu")
+            _flux_export_to_nunchaku_single_safetensors(
+                output_path=export_path,
+                dequant_state=dequant_state,
+                scale_state=scale_state_dict,
+                smooth_state=smooth_state,
+                branch_state=branch_state_dict,
+                transformer=transformer,
+                float_point=float_point,
+            )
+            if export_nunchaku_flux.get("cleanup_run_cache", False) and save_dirpath:
+                try:
+                    import shutil
+
+                    shutil.rmtree(save_dirpath, ignore_errors=True)
+                except Exception:
+                    pass
         del quantizer_state_dict, branch_state_dict, scale_state_dict
         tools.logging.Formatter.indent_dec()
         gc.collect()
@@ -269,7 +738,7 @@ def ptq(  # noqa: C901
     return model
 
 
-def main(config: DiffusionPtqRunConfig, logging_level: int = tools.logging.DEBUG) -> DiffusionPipeline:
+def main(config: DiffusionPtqRunConfig, logging_level: int = tools.logging.DEBUG) -> DiffusionPipeline:  # noqa: C901
     """Post-training quantization of a diffusion model.
 
     Args:
@@ -298,11 +767,40 @@ def main(config: DiffusionPtqRunConfig, logging_level: int = tools.logging.DEBUG
     logger.info("* Building diffusion model pipeline")
     tools.logging.Formatter.indent_inc()
     pipeline = config.pipeline.build()
+    if config.pipeline.unet_path and hasattr(pipeline, "unet"):
+        logger.info(f"* Loading UNet weights from {config.pipeline.unet_path}")
+        unet_state_dict_raw = {}
+        with safetensors.safe_open(config.pipeline.unet_path, framework="pt", device="cpu") as f:
+            for k in f.keys():
+                unet_state_dict_raw[k] = f.get_tensor(k)
+        if _looks_like_comfyui_or_sd_ckpt(unet_state_dict_raw):
+            # Convert full checkpoint into Diffusers UNet weights.
+            unet_state_dict = _convert_single_file_to_diffusers_unet_state_dict(
+                ckpt_path=config.pipeline.unet_path, torch_dtype=config.pipeline.dtype
+            )
+        else:
+            # Assume Diffusers-format UNet weights (possibly with extras); filter to known keys for safety.
+            expected = set(pipeline.unet.state_dict().keys())
+            unet_state_dict = {k: v for k, v in unet_state_dict_raw.items() if k in expected}
+        incompatible = pipeline.unet.load_state_dict(unet_state_dict, strict=False)
+        logger.info(
+            f"* UNet load: matched={len(unet_state_dict)} missing={len(incompatible.missing_keys)} "
+            f"unexpected={len(incompatible.unexpected_keys)}"
+        )
+        del unet_state_dict_raw, unet_state_dict, incompatible
+        gc.collect()
+        torch.cuda.empty_cache()
     if "nf4" not in config.pipeline.name and "gguf" not in config.pipeline.name:
         model = DiffusionModelStruct.construct(pipeline)
         tools.logging.Formatter.indent_dec()
+        # Default: save per-run cache under the job directory.
         save_dirpath = os.path.join(config.output.running_job_dirpath, "cache")
-        if config.save_model:
+        # If user requests Nunchaku SDXL/FLUX export, they likely don't want intermediate *.pt artifacts in the run folder.
+        # We'll keep everything in-memory and only write the final .safetensors.
+        if config.export_nunchaku_sdxl or config.export_nunchaku_flux:
+            save_dirpath = ""
+            save_model = False
+        if config.save_model and not config.export_nunchaku_sdxl and not config.export_nunchaku_flux:
             if config.save_model.lower() in ("false", "none", "null", "nil"):
                 save_model = False
             elif config.save_model.lower() in ("true", "default"):
@@ -311,6 +809,38 @@ def main(config: DiffusionPtqRunConfig, logging_level: int = tools.logging.DEBUG
                 save_dirpath, save_model = config.save_model, True
         else:
             save_model = False
+        export_sdxl_ctx = None
+        if config.export_nunchaku_sdxl:
+            if not config.pipeline.unet_path:
+                raise ValueError("export_nunchaku_sdxl requires pipeline.unet_path (original UNet safetensors).")
+            if not config.quant.enabled_wgts:
+                raise ValueError("export_nunchaku_sdxl requires weight quantization enabled (quant.wgts).")
+            if not config.quant.wgts.enabled_low_rank or not config.quant.wgts.low_rank:
+                raise ValueError("export_nunchaku_sdxl requires SVDQuant low-rank enabled (quant.wgts.low_rank).")
+            export_sdxl_ctx = {
+                "output_path": config.export_nunchaku_sdxl,
+                "orig_unet_path": config.pipeline.unet_path,
+                "unet": pipeline.unet,
+                "rank": int(config.quant.wgts.low_rank.rank),
+                "precision": "nvfp4",
+                "torch_dtype": config.pipeline.dtype,
+                "cleanup_run_cache": bool(config.cleanup_run_cache_after_export),
+            }
+
+        export_flux_ctx = None
+        if config.export_nunchaku_flux:
+            if not config.quant.enabled_wgts:
+                raise ValueError("export_nunchaku_flux requires weight quantization enabled (quant.wgts).")
+            transformer = pipeline.transformer if hasattr(pipeline, "transformer") else pipeline.unet
+            # Determine float_point from precision (sfp4 = float_point=True, int4 = float_point=False)
+            float_point = config.quant.wgts.dtype and "fp" in str(config.quant.wgts.dtype).lower()
+            export_flux_ctx = {
+                "output_path": config.export_nunchaku_flux,
+                "transformer": transformer,
+                "float_point": float_point,
+                "cleanup_run_cache": bool(config.cleanup_run_cache_after_export),
+            }
+
         model = ptq(
             model,
             config.quant,
@@ -319,6 +849,8 @@ def main(config: DiffusionPtqRunConfig, logging_level: int = tools.logging.DEBUG
             save_dirpath=save_dirpath,
             copy_on_save=config.copy_on_save,
             save_model=save_model,
+            export_nunchaku_sdxl=export_sdxl_ctx,
+            export_nunchaku_flux=export_flux_ctx,
         )
     if config.pipeline.lora is not None:
         load_from = ""
@@ -369,7 +901,13 @@ def main(config: DiffusionPtqRunConfig, logging_level: int = tools.logging.DEBUG
             logger.info(f"* Saving results to {config.output.job_dirpath}")
             with open(config.output.get_running_job_path("results.json"), "w") as f:
                 json.dump(results, f, indent=2, sort_keys=True)
-    config.output.unlock()
+    # Close file handlers (e.g. run.log) before renaming output directories on Windows.
+    # unlock() must NEVER crash the whole run (quantization may already be completed).
+    tools.logging.shutdown()
+    try:
+        config.output.unlock()
+    except Exception:
+        pass
 
 
 if __name__ == "__main__":

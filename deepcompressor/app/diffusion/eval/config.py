@@ -95,6 +95,10 @@ class DiffusionEvalConfig:
     ref_root: str = ""
     gt_stats_root: str = ""
     control_root: str | None = None
+    # Qwen-Image specific (ported from deepcompressor-syh)
+    negative_prompt: str = ""
+    txt_seq_lens: int | None = None
+    true_cfg_scale: float | None = None
 
     chunk_start: int = 0
     chunk_step: int = 1
@@ -119,6 +123,8 @@ class DiffusionEvalConfig:
             kwargs["num_inference_steps"] = self.num_steps
         if self.guidance_scale is not None:
             kwargs["guidance_scale"] = self.guidance_scale
+        if self.true_cfg_scale is not None:
+            kwargs["true_cfg_scale"] = self.true_cfg_scale
         return kwargs
 
     def _generate(
