@@ -1,6 +1,6 @@
 pipeline:
   name: flux.1-dev
-  path: ./root/models/flux1-dev.safetensors
+  path: /root/models/flux1-dev.safetensors
   dtype: torch.bfloat16
 eval:
   num_steps: 50
@@ -62,4 +62,3 @@ quant:
       sample_batch_size: 16
       sample_size: -1
   enable_smooth: false
-

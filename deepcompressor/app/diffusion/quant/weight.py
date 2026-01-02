@@ -337,6 +337,11 @@ def quantize_diffusion_block_weights(
                         if n in quantizer_state_dict:
                             processed.add(n)
                 module_names = [module_name]
+            else:
+                # QKV fusion成功時: 全メンバーをprocessedに追加（重複処理防止）
+                if len(module_names) > 1:
+                    for n in module_names[1:]:
+                        processed.add(n)
 
         residuals: list[torch.Tensor] = []
         for n in module_names:
