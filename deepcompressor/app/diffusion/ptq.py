@@ -396,6 +396,7 @@ def _flux_export_to_nunchaku_single_safetensors(
     branch_state: dict[str, dict[str, torch.Tensor]] | None,
     transformer,
     float_point: bool = False,
+    rank: int | None = None,
 ) -> None:
     """
     Export a single safetensors file that can be loaded by:
@@ -418,16 +419,49 @@ def _flux_export_to_nunchaku_single_safetensors(
     out_state.update(converted_state_dict)
     out_state.update(other_state_dict)
 
+    # Validate output for ComfyUI-nunchaku compatibility BEFORE writing:
+    # - For each quantized linear (qweight), ensure low-rank branch shapes are consistent
+    #   with Nunchaku runtime expectations.
+    #   out_dim = qweight.shape[0]
+    #   in_dim  = qweight.shape[1] * 2   (packed into int8)
+    for k, qw in out_state.items():
+        if not isinstance(qw, torch.Tensor) or qw.ndim != 2:
+            continue
+        if not k.endswith(".qweight"):
+            continue
+        base = k[: -len(".qweight")]
+        out_dim = int(qw.shape[0])
+        in_dim = int(qw.shape[1]) * 2
+        dk = base + ".lora_down"
+        uk = base + ".lora_up"
+        if dk in out_state:
+            d = out_state[dk]
+            if not (isinstance(d, torch.Tensor) and d.ndim == 2 and int(d.shape[0]) == in_dim):
+                raise RuntimeError(f"Invalid low-rank shape: {dk}={getattr(d,'shape',None)} expected [in_dim={in_dim}, rank]")
+        if uk in out_state:
+            u = out_state[uk]
+            if not (isinstance(u, torch.Tensor) and u.ndim == 2 and int(u.shape[0]) == out_dim):
+                raise RuntimeError(f"Invalid low-rank shape: {uk}={getattr(u,'shape',None)} expected [out_dim={out_dim}, rank]")
+
     # Build metadata
     transformer_cfg = getattr(transformer, "config", None)
     if hasattr(transformer_cfg, "to_dict"):
         transformer_cfg = transformer_cfg.to_dict()
     if not isinstance(transformer_cfg, dict):
         raise RuntimeError("Failed to read transformer config for Nunchaku export (transformer.config is not dict-like).")
-    metadata = {
-        "config": json.dumps(transformer_cfg),
-        "quantization_config": json.dumps({"float_point": bool(float_point)}),
+    # Build Nunchaku-compatible quantization_config metadata.
+    # Nunchaku expects `weight.dtype` and `rank` for correct runtime behavior.
+    qcfg: dict[str, object] = {
+        "method": "svdquant",
+        "weight": {
+            "dtype": "fp4_e2m1_all" if float_point else "int4",
+            # DeepCompressor fp4 configs use group_size=16; keep it explicit for compatibility.
+            "group_size": 16 if float_point else 64,
+        },
     }
+    if rank is not None:
+        qcfg["rank"] = int(rank)
+    metadata = {"config": json.dumps(transformer_cfg), "quantization_config": json.dumps(qcfg)}
 
     os.makedirs(os.path.dirname(os.path.abspath(output_path)) or ".", exist_ok=True)
     logger.info(f"* Saving Nunchaku FLUX.1-dev transformer safetensors to {output_path}")
@@ -671,6 +705,7 @@ def ptq(  # noqa: C901
             export_path = export_nunchaku_flux["output_path"]
             transformer = export_nunchaku_flux["transformer"]
             float_point = export_nunchaku_flux.get("float_point", False)
+            rank = int(export_nunchaku_flux.get("rank", 0))
             # dequantized weights are stored in the current in-memory model
             dequant_state = {k: v.detach().cpu() for k, v in model.module.state_dict().items()}
             # Load smooth state if available
@@ -685,6 +720,7 @@ def ptq(  # noqa: C901
                 branch_state=branch_state_dict,
                 transformer=transformer,
                 float_point=float_point,
+                rank=rank,
             )
             if export_nunchaku_flux.get("cleanup_run_cache", False) and save_dirpath:
                 try:
@@ -838,6 +874,7 @@ def main(config: DiffusionPtqRunConfig, logging_level: int = tools.logging.DEBUG
                 "output_path": config.export_nunchaku_flux,
                 "transformer": transformer,
                 "float_point": float_point,
+                "rank": int(config.quant.wgts.low_rank.rank) if config.quant.wgts.low_rank else 0,
                 "cleanup_run_cache": bool(config.cleanup_run_cache_after_export),
             }
 

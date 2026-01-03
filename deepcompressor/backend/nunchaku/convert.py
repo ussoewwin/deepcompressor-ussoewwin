@@ -123,8 +123,8 @@ def convert_to_nunchaku_transformer_block_state_dict(
     branch_dict: dict[str, torch.Tensor],
     block_name: str,
     local_name_map: dict[str, str | list[str]],
-    smooth_name_map: dict[str, str],
-    branch_name_map: dict[str, str],
+    smooth_name_map: dict[str, str | list[str]],
+    branch_name_map: dict[str, str | list[str]],
     convert_map: dict[str, str],
     float_point: bool = False,
 ) -> dict[str, torch.Tensor]:
@@ -163,10 +163,47 @@ def convert_to_nunchaku_transformer_block_state_dict(
             weight = torch.concat(weight, dim=0)
         else:
             weight, bias, scale, subscale = weight[0], bias[0], scale[0], subscale[0]
-        smooth = smooth_dict.get(f"{block_name}.{smooth_name_map.get(converted_local_name, '')}", None)
-        branch = branch_dict.get(f"{block_name}.{branch_name_map.get(converted_local_name, '')}", None)
-        if branch is not None:
-            branch = (branch["a.weight"], branch["b.weight"])
+        # Smooth handling:
+        # For fused projections (e.g. qkv), smooth must be consistent across candidates.
+        smooth_names = smooth_name_map.get(converted_local_name, "")
+        if isinstance(smooth_names, list):
+            smooths = [smooth_dict.get(f"{block_name}.{sn}", None) for sn in smooth_names]
+            if any(s is None for s in smooths):
+                smooth = None if all(s is None for s in smooths) else smooths[0]
+            else:
+                s0 = smooths[0]
+                if not all(torch.equal(s, s0) for s in smooths[1:]):
+                    raise ValueError(
+                        f"Cannot fuse smooth parameters for {block_name}.{converted_local_name}: "
+                        "smooth differs across candidates. Please quantize with shared smooth for fused qkv exports."
+                    )
+                smooth = s0
+        else:
+            smooth = smooth_dict.get(f"{block_name}.{smooth_names}", None) if smooth_names else None
+
+        # Low-rank branch (SVDQuant) handling:
+        # - For fused projections (e.g. qkv), we must fuse the branch consistently with weight concat.
+        # - DeepCompressor stores branches per original linear (to_q/to_k/to_v), while Nunchaku expects a fused qkv branch.
+        branch_names = branch_name_map.get(converted_local_name, "")
+        if isinstance(branch_names, list):
+            branches = [branch_dict.get(f"{block_name}.{bn}", None) for bn in branch_names]
+            if any(b is None for b in branches):
+                branch = None
+            else:
+                a0 = branches[0]["a.weight"]
+                if not all(torch.equal(b["a.weight"], a0) for b in branches[1:]):
+                    raise ValueError(
+                        f"Cannot fuse low-rank branch for {block_name}.{converted_local_name}: "
+                        "down projection (a.weight) differs across candidates. "
+                        "Please quantize with a shared low-rank basis for fused qkv exports."
+                    )
+                b_cat = torch.concat([b["b.weight"] for b in branches], dim=0)
+                branch = (a0, b_cat)
+        else:
+            branch = branch_dict.get(f"{block_name}.{branch_names}", None) if branch_names else None
+            if branch is not None:
+                branch = (branch["a.weight"], branch["b.weight"])
+
         if scale is None:
             assert smooth is None and branch is None and subscale is None
             print(f"  - Copying {block_name} weights of {candidate_local_names} as {converted_local_name}.weight")
@@ -247,13 +284,13 @@ def convert_to_nunchaku_flux_single_transformer_block_state_dict(
             "mlp_fc2": down_proj_local_name,
         },
         smooth_name_map={
-            "qkv_proj": "attn.to_q",
+            "qkv_proj": ["attn.to_q", "attn.to_k", "attn.to_v"],
             "out_proj": "proj_out.linears.0",
             "mlp_fc1": "attn.to_q",
             "mlp_fc2": down_proj_local_name,
         },
         branch_name_map={
-            "qkv_proj": "attn.to_q",
+            "qkv_proj": ["attn.to_q", "attn.to_k", "attn.to_v"],
             "out_proj": "proj_out.linears.0",
             "mlp_fc1": "proj_mlp",
             "mlp_fc2": down_proj_local_name,
@@ -309,8 +346,8 @@ def convert_to_nunchaku_flux_transformer_block_state_dict(
             "mlp_context_fc2": context_down_proj_local_name,
         },
         smooth_name_map={
-            "qkv_proj": "attn.to_q",
-            "qkv_proj_context": "attn.add_k_proj",
+            "qkv_proj": ["attn.to_q", "attn.to_k", "attn.to_v"],
+            "qkv_proj_context": ["attn.add_q_proj", "attn.add_k_proj", "attn.add_v_proj"],
             "out_proj": "attn.to_out.0",
             "out_proj_context": "attn.to_out.0",
             "mlp_fc1": "ff.net.0.proj",
@@ -319,8 +356,8 @@ def convert_to_nunchaku_flux_transformer_block_state_dict(
             "mlp_context_fc2": context_down_proj_local_name,
         },
         branch_name_map={
-            "qkv_proj": "attn.to_q",
-            "qkv_proj_context": "attn.add_k_proj",
+            "qkv_proj": ["attn.to_q", "attn.to_k", "attn.to_v"],
+            "qkv_proj_context": ["attn.add_q_proj", "attn.add_k_proj", "attn.add_v_proj"],
             "out_proj": "attn.to_out.0",
             "out_proj_context": "attn.to_add_out",
             "mlp_fc1": "ff.net.0.proj",
