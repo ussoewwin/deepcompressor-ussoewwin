@@ -19,6 +19,7 @@ quant:
       sample_batch_size: 16
       sample_size: -1
       rank: 128
+      exclusive: false
       compensate: true
       num_iters: 1
     skips: 

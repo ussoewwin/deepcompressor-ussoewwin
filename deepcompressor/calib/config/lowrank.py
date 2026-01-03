@@ -51,8 +51,11 @@ class QuantLowRankCalibConfig(SearchBasedCalibConfig, QuantLowRankConfig):
     def __post_init__(self):
         if self.strategy != SearchBasedCalibStrategy.Manual:
             self.strategy = SearchBasedCalibStrategy.GridSearch
-        if self.compensate and self.num_iters <= 1:
-            self.exclusive = True
+        # NOTE:
+        # Previously we forced `exclusive=True` whenever `compensate=True` and `num_iters<=1`.
+        # That prevents sharing a low-rank basis across fused QKV candidates, which is required
+        # by some exporters (e.g. Nunchaku fused-QKV exports) to fuse low-rank branches.
+        # Keep `exclusive` as a user-controlled knob via configs.
         super().__post_init__()
 
     def generate_dirnames(self, *, prefix: str = "", **kwargs) -> list[str]:
