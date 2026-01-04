@@ -801,6 +801,27 @@ def main(config: DiffusionPtqRunConfig, logging_level: int = tools.logging.DEBUG
     logger = tools.logging.getLogger(__name__)
 
     # Explicit English logs for SDXL/FLUX runs: show effective low-rank settings.
+    # Also print an explicit run target to avoid ambiguity for users parsing logs.
+    run_target = "UNKNOWN"
+    if bool(config.export_nunchaku_flux):
+        run_target = "FLUX"
+    elif bool(config.export_nunchaku_sdxl):
+        run_target = "SDXL"
+    else:
+        # Best-effort inference from pipeline name (still keep UNKNOWN if not obvious).
+        pname = str(getattr(config.pipeline, "name", "") or "").lower()
+        if "sdxl" in pname:
+            run_target = "SDXL"
+        elif "flux" in pname:
+            run_target = "FLUX"
+
+    logger.info(
+        "* RUN TARGET (explicit): %s (pipeline.name=%s, pipeline.path=%s, pipeline.unet_path=%s)",
+        run_target,
+        getattr(config.pipeline, "name", None),
+        getattr(config.pipeline, "path", None),
+        getattr(config.pipeline, "unet_path", None),
+    )
     lr = None
     try:
         lr = config.quant.wgts.low_rank if (config.quant and config.quant.wgts) else None
@@ -808,20 +829,23 @@ def main(config: DiffusionPtqRunConfig, logging_level: int = tools.logging.DEBUG
         lr = None
     if lr is not None:
         logger.info(
-            "* Low-rank config (effective): rank=%s exclusive=%s compensate=%s num_iters=%s",
+            "* Low-rank config (effective) [%s]: rank=%s exclusive=%s compensate=%s num_iters=%s",
+            run_target,
             getattr(lr, "rank", None),
             getattr(lr, "exclusive", None),
             getattr(lr, "compensate", None),
             getattr(lr, "num_iters", None),
         )
     logger.info(
-        "* Export mode: nunchaku_sdxl=%s nunchaku_flux=%s",
+        "* Export mode [%s]: nunchaku_sdxl=%s nunchaku_flux=%s",
+        run_target,
         bool(config.export_nunchaku_sdxl),
         bool(config.export_nunchaku_flux),
     )
     if _forced_flux_lowrank_exclusive is not None:
         logger.info(
-            "* Override applied for FLUX Nunchaku export: low_rank.exclusive %s -> %s",
+            "* Override applied for FLUX Nunchaku export [%s]: low_rank.exclusive %s -> %s",
+            run_target,
             _forced_flux_lowrank_exclusive,
             False,
         )
