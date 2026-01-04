@@ -497,6 +497,10 @@ class SmoothCalibrator(SearchBasedCalibrator[SmoothCalibConfig, torch.Tensor]):
     ) -> torch.Tensor:
         if self.num_unique_heads > 0 and needs_reduction:
             scale = scale.view(self.num_unique_heads, self.num_head_repeats, -1)[:, 0, :].reshape(-1)
+        # Ensure device matches the tensor being processed. This avoids cuda/cpu mixing
+        # (e.g. after OOM recovery paths or when candidates are kept on CPU).
+        if scale.device != tensor.device:
+            scale = scale.to(device=tensor.device)
         shape = [1] * tensor.ndim
         shape[channels_dim] = -1
         return scale.view(shape)

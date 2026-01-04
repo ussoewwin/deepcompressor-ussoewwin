@@ -46,8 +46,41 @@ class Codebook:
                 A rounded tensor.
         """
         dtype = tensor.dtype
-        tensor = tensor.to(self.values.dtype).contiguous()
-        return _C.round_to_nearest_in_codebook_cuda(tensor, self.values).to(dtype=dtype)
+
+        # CPU fallback (used in rare cases like CPU smoothing/recovery). Keep it correct and simple.
+        if not tensor.is_cuda:
+            vals = self.values.to(device=tensor.device, dtype=tensor.dtype)
+            # vals is sorted ascending by construction
+            idx = torch.bucketize(tensor, vals)
+            idx0 = (idx - 1).clamp(0, vals.numel() - 1)
+            idx1 = idx.clamp(0, vals.numel() - 1)
+            v0 = vals[idx0]
+            v1 = vals[idx1]
+            choose0 = (tensor - v0).abs() <= (v1 - tensor).abs()
+            return torch.where(choose0, v0, v1).to(dtype=dtype)
+
+        # CUDA path: avoid large temporary allocations by chunking very large tensors.
+        # Some GPUs/drivers + allocator states can OOM when rounding giant tensors in one shot.
+        t = tensor.to(self.values.dtype).contiguous()
+        vals = self.values
+        if vals.device != t.device:
+            vals = vals.to(device=t.device)
+
+        # Threshold chosen to keep peak scratch low while minimizing overhead.
+        # (Tune conservatively; correctness is identical.)
+        numel = t.numel()
+        if numel <= 4_000_000:
+            return _C.round_to_nearest_in_codebook_cuda(t, vals).to(dtype=dtype)
+
+        out = torch.empty_like(t)
+        t_flat = t.view(-1)
+        out_flat = out.view(-1)
+        # Process in chunks to cap peak memory. 1M elements ~= 2MB (fp16), typically safe.
+        chunk = 1_000_000
+        for start in range(0, numel, chunk):
+            end = min(start + chunk, numel)
+            out_flat[start:end] = _C.round_to_nearest_in_codebook_cuda(t_flat[start:end].contiguous(), vals)
+        return out.to(dtype=dtype).view_as(tensor)
 
     def to(self, *, device: torch.device | None = None, dtype: torch.dtype | None = None) -> "Codebook":
         """Move the codebook to the specified device and dtype.
