@@ -140,8 +140,15 @@ class BaseCalibCacheLoader(ABC):
     ) -> None:
         inputs = self._convert_layer_inputs(m, args, kwargs, save_all=save_all)
         if len(cache) > 0:
-            inputs.args = tree_copy_with_ref(inputs.args, cache[0].args)
-            inputs.kwargs = tree_copy_with_ref(inputs.kwargs, cache[0].kwargs)
+            # Reuse references to reduce memory when possible.
+            # In rare cases (e.g. retrying after CUDA OOM with a CPU fallback),
+            # tensors may end up on different devices; skip the reference-copy optimization then.
+            try:
+                inputs.args = tree_copy_with_ref(inputs.args, cache[0].args)
+                inputs.kwargs = tree_copy_with_ref(inputs.kwargs, cache[0].kwargs)
+            except RuntimeError:
+                inputs.args = tree_map(lambda x: x, inputs.args)
+                inputs.kwargs = tree_map(lambda x: x, inputs.kwargs)
         else:
             inputs.args = tree_map(lambda x: x, inputs.args)
             inputs.kwargs = tree_map(lambda x: x, inputs.kwargs)
