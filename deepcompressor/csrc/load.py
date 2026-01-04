@@ -12,10 +12,12 @@ dirpath = os.path.dirname(__file__)
 _C = load(
     name="deepcompressor_C",
     sources=[f"{dirpath}/pybind.cpp", f"{dirpath}/quantize/quantize.cu"],
-    extra_cflags=["-g", "-O3", "-fopenmp", "-lgomp", "-std=c++20"],
+    # NOTE: Some CUDA toolchains (nvcc) do not accept `-std=c++20`.
+    # Use C++17 for broad compatibility (e.g. CUDA 11.x environments).
+    extra_cflags=["-g", "-O3", "-fopenmp", "-lgomp", "-std=c++17"],
     extra_cuda_cflags=[
         "-O3",
-        "-std=c++20",
+        "-std=c++17",
         "-U__CUDA_NO_HALF_OPERATORS__",
         "-U__CUDA_NO_HALF_CONVERSIONS__",
         "-U__CUDA_NO_HALF2_OPERATORS__",
