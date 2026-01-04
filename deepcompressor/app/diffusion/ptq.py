@@ -849,6 +849,12 @@ def main(config: DiffusionPtqRunConfig, logging_level: int = tools.logging.DEBUG
             _forced_flux_lowrank_exclusive,
             False,
         )
+    # Prevent intermediate *.pt cache artifacts for FLUX export runs (user requirement).
+    # Note: we still write run.log/config.yaml (text) for traceability.
+    ptq_cache = config.cache
+    if bool(config.export_nunchaku_flux):
+        ptq_cache = None
+        logger.info("* Cache writes: DISABLED for FLUX Nunchaku export (no *.pt cache files will be written)")
 
     logger.info("=== Configurations ===")
     tools.logging.info(config.formatted_str(), logger=logger)
@@ -939,7 +945,7 @@ def main(config: DiffusionPtqRunConfig, logging_level: int = tools.logging.DEBUG
         model = ptq(
             model,
             config.quant,
-            cache=config.cache,
+            cache=ptq_cache,
             load_dirpath=config.load_from,
             save_dirpath=save_dirpath,
             copy_on_save=config.copy_on_save,
