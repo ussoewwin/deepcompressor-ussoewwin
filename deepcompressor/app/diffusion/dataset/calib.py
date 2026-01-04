@@ -12,6 +12,7 @@ import torch.utils.data
 from diffusers.models.attention import JointTransformerBlock
 from diffusers.models.attention_processor import Attention
 from diffusers.models.transformers.transformer_flux import (
+    FluxAttention,
     FluxSingleTransformerBlock,
     FluxTransformerBlock,
 )
@@ -105,7 +106,7 @@ class DiffusionConcatCacheAction(ConcatCacheAction):
             cache (`TensorsCache`):
                 Cache.
         """
-        if isinstance(module, Attention):
+        if isinstance(module, (Attention, FluxAttention)):
             encoder_hidden_states = tensors.get("encoder_hidden_states", None)
             if encoder_hidden_states is None:
                 tensors.pop("encoder_hidden_states", None)
@@ -172,7 +173,7 @@ class DiffusionCalibCacheLoader(BaseCalibCacheLoader):
                 ),
                 outputs=TensorCache(channels_dim=-1, reshape=LinearReshapeFn()),
             )
-        elif isinstance(module, Attention):
+        elif isinstance(module, (Attention, FluxAttention)):
             return IOTensorsCache(
                 inputs=TensorsCache(
                     OrderedDict(
