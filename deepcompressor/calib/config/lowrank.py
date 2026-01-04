@@ -51,11 +51,14 @@ class QuantLowRankCalibConfig(SearchBasedCalibConfig, QuantLowRankConfig):
     def __post_init__(self):
         if self.strategy != SearchBasedCalibStrategy.Manual:
             self.strategy = SearchBasedCalibStrategy.GridSearch
-        # NOTE:
-        # Previously we forced `exclusive=True` whenever `compensate=True` and `num_iters<=1`.
-        # That prevents sharing a low-rank basis across fused QKV candidates, which is required
-        # by some exporters (e.g. Nunchaku fused-QKV exports) to fuse low-rank branches.
-        # Keep `exclusive` as a user-controlled knob via configs.
+        # Backward-compatibility:
+        # Historically, when `compensate=True` and `num_iters<=1`, we forced `exclusive=True`
+        # to match the legacy SDXL behavior/users' expectations.
+        #
+        # NOTE: For FLUX Nunchaku fused-QKV exports we override this later in the PTQ runner
+        # (see `deepcompressor.app.diffusion.ptq.main`) to ensure `exclusive=False`.
+        if self.compensate and self.num_iters <= 1:
+            self.exclusive = True
         super().__post_init__()
 
     def generate_dirnames(self, *, prefix: str = "", **kwargs) -> list[str]:

@@ -788,9 +788,43 @@ def main(config: DiffusionPtqRunConfig, logging_level: int = tools.logging.DEBUG
             The diffusion pipeline with quantized model.
     """
     config.output.lock()
+    # Compatibility + FLUX export safety:
+    # - Keep legacy behavior (SDXL etc.): low-rank `exclusive=True` may be auto-forced by config.
+    # - But for FLUX Nunchaku fused-QKV export, we must ensure a shared low-rank basis,
+    #   i.e. `exclusive=False`, regardless of the legacy auto-forcing.
+    _forced_flux_lowrank_exclusive: bool | None = None
+    if config.export_nunchaku_flux and config.quant and config.quant.wgts and config.quant.wgts.low_rank:
+        _forced_flux_lowrank_exclusive = bool(config.quant.wgts.low_rank.exclusive)
+        config.quant.wgts.low_rank.exclusive = False
     config.dump(path=config.output.get_running_job_path("config.yaml"))
     tools.logging.setup(path=config.output.get_running_job_path("run.log"), level=logging_level)
     logger = tools.logging.getLogger(__name__)
+
+    # Explicit English logs for SDXL/FLUX runs: show effective low-rank settings.
+    lr = None
+    try:
+        lr = config.quant.wgts.low_rank if (config.quant and config.quant.wgts) else None
+    except Exception:
+        lr = None
+    if lr is not None:
+        logger.info(
+            "* Low-rank config (effective): rank=%s exclusive=%s compensate=%s num_iters=%s",
+            getattr(lr, "rank", None),
+            getattr(lr, "exclusive", None),
+            getattr(lr, "compensate", None),
+            getattr(lr, "num_iters", None),
+        )
+    logger.info(
+        "* Export mode: nunchaku_sdxl=%s nunchaku_flux=%s",
+        bool(config.export_nunchaku_sdxl),
+        bool(config.export_nunchaku_flux),
+    )
+    if _forced_flux_lowrank_exclusive is not None:
+        logger.info(
+            "* Override applied for FLUX Nunchaku export: low_rank.exclusive %s -> %s",
+            _forced_flux_lowrank_exclusive,
+            False,
+        )
 
     logger.info("=== Configurations ===")
     tools.logging.info(config.formatted_str(), logger=logger)
