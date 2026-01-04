@@ -253,6 +253,11 @@ class SearchBasedCalibrator(ABC, tp.Generic[_CONFIG, _CANDIDATE]):
 
     def _parse_ipts(self, ipts: TensorsCache | None, set_device: bool = False) -> TensorsCache | None:
         if set_device:
+            # Reset and then re-apply the configured output storage device.
+            # NOTE: Previously this was only set when the number of samples changed after repartition,
+            # which can leave `opts_device=None` in common cases (e.g. sample_size=-1) and cause
+            # `orig_opts` to be stored on GPU (`y.device`) during OutputsError calibration.
+            # That can explode VRAM for large modules like FLUX QKV. We always honor config here.
             self.opts_device = None
         elif ipts is None:
             return None
@@ -280,7 +285,7 @@ class SearchBasedCalibrator(ABC, tp.Generic[_CONFIG, _CANDIDATE]):
         )
         curr_size = len(parsed_ipts.front().data)
         assert all(len(ipt.data) == curr_size for ipt in parsed_ipts.values())
-        if set_device and prev_size != curr_size:
+        if set_device:
             self.opts_device = self.config.outputs_device
         return parsed_ipts
 
