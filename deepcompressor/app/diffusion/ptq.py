@@ -33,6 +33,74 @@ from .quant import (
 __all__ = ["ptq"]
 
 
+def _build_flux_comfy_config(*, transformer_cfg: dict[str, object]) -> str:
+    """
+    Build ComfyUI-style `comfy_config` JSON for FLUX models from the (Diffusers) transformer config.
+
+    This is used only for `--export-nunchaku-flux` to better match "official" Nunchaku metadata
+    and mitigate noisy outputs caused by missing/incorrect runtime config.
+    """
+
+    def _get_int(k: str, default: int | None = None) -> int | None:
+        v = transformer_cfg.get(k, default)
+        try:
+            return int(v) if v is not None else None
+        except Exception:
+            return default
+
+    def _get_bool(k: str, default: bool | None = None) -> bool | None:
+        v = transformer_cfg.get(k, default)
+        if isinstance(v, bool):
+            return v
+        if isinstance(v, str):
+            if v.lower() in ("true", "1", "yes", "y"):
+                return True
+            if v.lower() in ("false", "0", "no", "n"):
+                return False
+        return default
+
+    head_dim = _get_int("attention_head_dim", 128) or 128
+    num_heads = _get_int("num_attention_heads", 24) or 24
+    hidden_size = head_dim * num_heads
+
+    # Diffusers FluxTransformer2DModel uses in_channels=64, patch_size=1,
+    # while ComfyUI expects in/out_channels=16, patch_size=2.
+    in_channels = _get_int("in_channels", 64) or 64
+    out_channels = in_channels
+    if in_channels % 4 == 0:
+        in_channels //= 4
+        out_channels //= 4
+    patch_size = _get_int("patch_size", 1) or 1
+    patch_size *= 2
+
+    # Prefer explicit values if present; otherwise match the known Flux.1-dev defaults.
+    axes_dim = transformer_cfg.get("axes_dim") or transformer_cfg.get("axes_dims") or [16, 56, 56]
+    if not (isinstance(axes_dim, (list, tuple)) and len(axes_dim) == 3):
+        axes_dim = [16, 56, 56]
+    axes_dim = [int(x) for x in axes_dim]
+
+    model_cfg: dict[str, object] = {
+        "axes_dim": axes_dim,
+        "context_in_dim": _get_int("joint_attention_dim", 4096) or 4096,
+        "depth": _get_int("num_layers", 19) or 19,
+        "depth_single_blocks": _get_int("num_single_layers", 38) or 38,
+        "disable_unet_model_creation": True,
+        "guidance_embed": bool(_get_bool("guidance_embeds", True)),
+        "hidden_size": hidden_size,
+        "image_model": "flux",
+        "in_channels": in_channels,
+        "mlp_ratio": float(transformer_cfg.get("mlp_ratio", 4.0) or 4.0),
+        "num_heads": num_heads,
+        "out_channels": out_channels,
+        "patch_size": patch_size,
+        "qkv_bias": bool(transformer_cfg.get("qkv_bias", True)),
+        "theta": int(transformer_cfg.get("theta", 10000) or 10000),
+        "vec_in_dim": _get_int("pooled_projection_dim", 768) or 768,
+    }
+    comfy_obj = {"model_class": "Flux", "model_config": model_cfg}
+    return json.dumps(comfy_obj, indent=2, ensure_ascii=False)
+
+
 def _load_safetensors_state_dict(path: str) -> dict[str, torch.Tensor]:
     state_dict: dict[str, torch.Tensor] = {}
     with safetensors.safe_open(path, framework="pt", device="cpu") as f:
@@ -1000,6 +1068,17 @@ def main(config: DiffusionPtqRunConfig, logging_level: int = tools.logging.DEBUG
             }
             if config.quant.wgts.low_rank is not None:
                 qcfg["rank"] = int(config.quant.wgts.low_rank.rank)
+
+            # Build ComfyUI-style comfy_config from the transformer config (no hardcoded blob).
+            comfy_cfg = None
+            try:
+                tcfg = getattr(transformer, "config", None)
+                if hasattr(tcfg, "to_dict"):
+                    tcfg = tcfg.to_dict()
+                if isinstance(tcfg, dict):
+                    comfy_cfg = _build_flux_comfy_config(transformer_cfg=tcfg)
+            except Exception:
+                comfy_cfg = None
             export_flux_ctx = {
                 "output_path": config.export_nunchaku_flux,
                 "transformer": transformer,
@@ -1007,7 +1086,7 @@ def main(config: DiffusionPtqRunConfig, logging_level: int = tools.logging.DEBUG
                 "rank": int(config.quant.wgts.low_rank.rank) if config.quant.wgts.low_rank else 0,
                 "cleanup_run_cache": bool(config.cleanup_run_cache_after_export),
                 "quantization_config": qcfg,
-                "comfy_config": None,
+                "comfy_config": comfy_cfg,
             }
 
         model = ptq(
