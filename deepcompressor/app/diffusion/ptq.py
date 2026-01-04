@@ -679,12 +679,50 @@ def ptq(  # noqa: C901
                 smooth_cache = smooth_diffusion(model, config)
             except torch.OutOfMemoryError:
                 # FLUX smoothing can exceed VRAM even at batch_size=1.
-                # Retry smoothing on CPU for FLUX export runs.
+                # First retry on GPU with a lower develop dtype (reduces peak scratch/temps),
+                # then (as a last resort) fall back to CPU for FLUX export runs.
                 if not export_nunchaku_flux:
                     raise
                 logger.warning(
                     "! CUDA OOM during smoothing for FLUX export; retrying smoothing on CPU (this will be slower)."
                 )
+                # Try to reduce peak VRAM on GPU before falling back to CPU.
+                _orig_develop_dtype = getattr(config, "develop_dtype", None)
+                _retry_dtypes: list[torch.dtype] = []
+                # Prefer bf16 on H100/Hopper; fall back to fp16 if needed.
+                for dt in (torch.bfloat16, torch.float16):
+                    if _orig_develop_dtype is None or dt != _orig_develop_dtype:
+                        _retry_dtypes.append(dt)
+                _gpu_retry_ok = False
+                for dt in _retry_dtypes:
+                    try:
+                        logger.warning(
+                            "! FLUX smoothing OOM: retrying on GPU with develop_dtype=%s (no CPU fallback yet)",
+                            dt,
+                        )
+                        config.develop_dtype = dt
+                        gc.collect()
+                        torch.cuda.empty_cache()
+                        smooth_cache = smooth_diffusion(model, config)
+                        _gpu_retry_ok = True
+                        break
+                    except torch.OutOfMemoryError:
+                        gc.collect()
+                        torch.cuda.empty_cache()
+                        continue
+                    finally:
+                        # Keep successful dtype; otherwise we'll restore before CPU fallback.
+                        pass
+                if _gpu_retry_ok:
+                    # success: skip CPU fallback
+                    pass
+                else:
+                    # restore original dtype before CPU fallback
+                    if _orig_develop_dtype is not None:
+                        try:
+                            config.develop_dtype = _orig_develop_dtype
+                        except Exception:
+                            pass
                 try:
                     torch.cuda.empty_cache()
                 except Exception:
@@ -699,7 +737,9 @@ def ptq(  # noqa: C901
                 model.module.to("cpu")
                 gc.collect()
                 try:
-                    smooth_cache = smooth_diffusion(model, config)
+                    # If GPU retry succeeded above, we already have `smooth_cache`.
+                    if not _gpu_retry_ok:
+                        smooth_cache = smooth_diffusion(model, config)
                 finally:
                     # Move back to original device if any
                     if _orig_device and _orig_device != "cpu":
