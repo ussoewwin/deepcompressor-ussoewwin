@@ -169,6 +169,10 @@ class DiffusionCalibCacheLoader(BaseCalibCacheLoader):
                 inputs=TensorsCache(
                     OrderedDict(
                         hidden_states=TensorCache(channels_dim=-1, reshape=LinearReshapeFn()),
+                        # Diffusers FLUX `FluxSingleTransformerBlock.forward` expects encoder_hidden_states.
+                        # If we don't cache it, smoothing calibration may fail with:
+                        #   TypeError: ... missing 1 required positional argument: 'encoder_hidden_states'
+                        encoder_hidden_states=TensorCache(channels_dim=-1, reshape=LinearReshapeFn()),
                         temb=TensorCache(channels_dim=1, reshape=LinearReshapeFn()),
                     )
                 ),
@@ -229,7 +233,7 @@ class DiffusionCalibCacheLoader(BaseCalibCacheLoader):
         else:
             hidden_states = args[0]
         args_rest = tree_map(lambda x: x.detach().cpu() if isinstance(x, torch.Tensor) else x, args[1:])
-        if isinstance(m, (FluxTransformerBlock, JointTransformerBlock)):
+        if isinstance(m, (FluxTransformerBlock, JointTransformerBlock, FluxSingleTransformerBlock)):
             if "encoder_hidden_states" in kwargs:
                 encoder_hidden_states = kwargs.pop("encoder_hidden_states")
             else:
