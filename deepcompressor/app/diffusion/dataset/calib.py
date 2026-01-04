@@ -28,6 +28,7 @@ from deepcompressor.data.utils.reshape import AttentionInputReshapeFn, LinearRes
 from deepcompressor.dataset.action import CacheAction, ConcatCacheAction
 from deepcompressor.dataset.cache import BaseCalibCacheLoader
 from deepcompressor.dataset.config import BaseDataLoaderConfig
+from deepcompressor.utils.common import tree_map
 
 from ..nn.struct import DiffusionBlockStruct, DiffusionModelStruct
 from .base import DiffusionDataset
@@ -212,14 +213,22 @@ class DiffusionCalibCacheLoader(BaseCalibCacheLoader):
             `ModuleForwardInput`:
                 Module forward input.
         """
+        # IMPORTANT:
+        # During the "collecting acts info" phase, we store per-layer forward inputs into `forward_cache`.
+        # If we keep GPU tensors inside args/kwargs, those references accumulate across samples and can
+        # eventually OOM even on large GPUs. To avoid this, we always detach+move any tensors in
+        # args/kwargs to CPU before caching. They will be moved back to the target device later via
+        # `ModuleForwardInput.to(...)` when actually replaying the layer forward.
         kwargs = {k: v for k, v in kwargs.items()}  # noqa: C416
         if "res_hidden_states_tuple" in kwargs:
             kwargs["res_hidden_states_tuple"] = None
+        kwargs = tree_map(lambda x: x.detach().cpu() if isinstance(x, torch.Tensor) else x, kwargs)
         if "hidden_states" in kwargs:
             hidden_states = kwargs.pop("hidden_states")
             assert len(args) == 0, f"Invalid args: {args}"
         else:
             hidden_states = args[0]
+        args_rest = tree_map(lambda x: x.detach().cpu() if isinstance(x, torch.Tensor) else x, args[1:])
         if isinstance(m, (FluxTransformerBlock, JointTransformerBlock)):
             if "encoder_hidden_states" in kwargs:
                 encoder_hidden_states = kwargs.pop("encoder_hidden_states")
@@ -234,7 +243,7 @@ class DiffusionCalibCacheLoader(BaseCalibCacheLoader):
             )
         else:
             return ModuleForwardInput(
-                args=[hidden_states.detach().cpu() if save_all else MISSING, *args[1:]], kwargs=kwargs
+                args=[hidden_states.detach().cpu() if save_all else MISSING, *args_rest], kwargs=kwargs
             )
 
     def _convert_layer_outputs(self, m: nn.Module, outputs: tp.Any) -> dict[str | int, tp.Any]:

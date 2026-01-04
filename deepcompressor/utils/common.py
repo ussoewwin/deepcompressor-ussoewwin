@@ -135,6 +135,10 @@ def tree_copy_with_ref(
     elif isinstance(tree, torch.Tensor):
         assert isinstance(ref, torch.Tensor), f"source is a tensor but reference is not: {type(ref)}"
         assert tree.shape == ref.shape, f"source.shape={tree.shape} != reference.shape={ref.shape}"
+        # If devices differ (e.g. after a CPU fallback), avoid triggering device-mismatch errors
+        # from `allclose`. In that case we can't reuse the reference tensor anyway.
+        if tree.device != ref.device:
+            return tree
         if tree.data_ptr() == ref.data_ptr() or tree.allclose(ref):
             return ref
         else:
