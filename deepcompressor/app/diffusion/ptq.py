@@ -683,9 +683,6 @@ def ptq(  # noqa: C901
                 # then (as a last resort) fall back to CPU for FLUX export runs.
                 if not export_nunchaku_flux:
                     raise
-                logger.warning(
-                    "! CUDA OOM during smoothing for FLUX export; retrying smoothing on CPU (this will be slower)."
-                )
                 # Try to reduce peak VRAM on GPU before falling back to CPU.
                 _orig_develop_dtype = getattr(config, "develop_dtype", None)
                 _retry_dtypes: list[torch.dtype] = []
@@ -714,9 +711,11 @@ def ptq(  # noqa: C901
                         # Keep successful dtype; otherwise we'll restore before CPU fallback.
                         pass
                 if _gpu_retry_ok:
-                    # success: skip CPU fallback
-                    pass
+                    logger.warning("! FLUX smoothing OOM: recovered on GPU (skipping CPU fallback)")
                 else:
+                    logger.warning(
+                        "! CUDA OOM during smoothing for FLUX export; falling back to CPU (this will be slower)."
+                    )
                     # restore original dtype before CPU fallback
                     if _orig_develop_dtype is not None:
                         try:
@@ -734,21 +733,20 @@ def ptq(  # noqa: C901
                     _orig_device = str(p0.device) if p0 is not None else None
                 except Exception:
                     _orig_device = None
-                model.module.to("cpu")
-                gc.collect()
-                try:
-                    # If GPU retry succeeded above, we already have `smooth_cache`.
-                    if not _gpu_retry_ok:
-                        smooth_cache = smooth_diffusion(model, config)
-                finally:
-                    # Move back to original device if any
-                    if _orig_device and _orig_device != "cpu":
-                        model.module.to(_orig_device)
+                if not _gpu_retry_ok:
+                    model.module.to("cpu")
                     gc.collect()
                     try:
-                        torch.cuda.empty_cache()
-                    except Exception:
-                        pass
+                        smooth_cache = smooth_diffusion(model, config)
+                    finally:
+                        # Move back to original device if any
+                        if _orig_device and _orig_device != "cpu":
+                            model.module.to(_orig_device)
+                        gc.collect()
+                        try:
+                            torch.cuda.empty_cache()
+                        except Exception:
+                            pass
             if cache and cache.path.smooth:
                 logger.info(f"- Saving smooth scales to {cache.path.smooth}")
                 os.makedirs(cache.dirpath.smooth, exist_ok=True)
@@ -999,15 +997,9 @@ def main(config: DiffusionPtqRunConfig, logging_level: int = tools.logging.DEBUG
     # Rationale: FLUX QKV proj is the peak-memory hotspot; OutputsError calibration evaluates the module
     # on batches of samples. Smaller `sample_batch_size` reduces peak activation + kernel scratch usage.
     if bool(config.export_nunchaku_flux) and config.quant and config.quant.smooth and config.quant.smooth.proj:
-        try:
-            _sb = int(getattr(config.quant.smooth.proj, "sample_batch_size", -1))
-        except Exception:
-            _sb = -1
-        if _sb is None or _sb <= 0:
-            # keep as-is (auto) when unspecified
-            pass
-        elif _sb > 1:
-            config.quant.smooth.proj.sample_batch_size = 1
+        # Force sample batching to 1 for FLUX smoothing to reduce peak VRAM.
+        # `-1` means auto; auto is too aggressive for FLUX QKV in practice.
+        config.quant.smooth.proj.sample_batch_size = 1
     # FLUX export: enable aggressive CUDA cleanup during smoothing to prevent allocator growth/fragmentation
     # from blowing up peak VRAM on very large modules (e.g. QKV).
     if bool(config.export_nunchaku_flux) and config.quant:
