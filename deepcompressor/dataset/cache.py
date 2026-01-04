@@ -311,7 +311,12 @@ class BaseCalibCacheLoader(ABC):
             if early_stop_module is not None:
                 forward_hooks.append(early_stop_module.register_forward_hook(EarlyStopHook()))
             with torch.inference_mode():
-                device = "cuda" if torch.cuda.is_available() else "cpu"
+                # Use the model's device if possible (important for CPU fallback runs).
+                try:
+                    p = next(model.parameters(), None)
+                    device = str(p.device) if p is not None else ("cuda" if torch.cuda.is_available() else "cpu")
+                except Exception:
+                    device = "cuda" if torch.cuda.is_available() else "cpu"
                 tbar = tqdm(
                     desc="collecting acts info",
                     leave=False,

@@ -675,7 +675,40 @@ def ptq(  # noqa: C901
             smooth_diffusion(model, config, smooth_cache=smooth_cache)
         else:
             logger.info("- Generating smooth scales")
-            smooth_cache = smooth_diffusion(model, config)
+            try:
+                smooth_cache = smooth_diffusion(model, config)
+            except torch.OutOfMemoryError:
+                # FLUX smoothing can exceed VRAM even at batch_size=1.
+                # Retry smoothing on CPU for FLUX export runs.
+                if not export_nunchaku_flux:
+                    raise
+                logger.warning(
+                    "! CUDA OOM during smoothing for FLUX export; retrying smoothing on CPU (this will be slower)."
+                )
+                try:
+                    torch.cuda.empty_cache()
+                except Exception:
+                    pass
+                # Move model to CPU for smoothing pass
+                _orig_device = None
+                try:
+                    p0 = next(model.module.parameters(), None)
+                    _orig_device = str(p0.device) if p0 is not None else None
+                except Exception:
+                    _orig_device = None
+                model.module.to("cpu")
+                gc.collect()
+                try:
+                    smooth_cache = smooth_diffusion(model, config)
+                finally:
+                    # Move back to original device if any
+                    if _orig_device and _orig_device != "cpu":
+                        model.module.to(_orig_device)
+                    gc.collect()
+                    try:
+                        torch.cuda.empty_cache()
+                    except Exception:
+                        pass
             if cache and cache.path.smooth:
                 logger.info(f"- Saving smooth scales to {cache.path.smooth}")
                 os.makedirs(cache.dirpath.smooth, exist_ok=True)
