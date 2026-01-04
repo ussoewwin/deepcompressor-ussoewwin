@@ -49,6 +49,10 @@ class DiffusionQuantConfig(DiffusionModuleQuantizerConfig):
     rotation: QuantRotationConfig | None = None
     smooth: SmoothTransfomerConfig | None = None
     develop_dtype: torch.dtype = field(default_factory=lambda s=torch.float32: eval_dtype(s, with_quant_dtype=False))
+    # Aggressive CUDA cleanup between smoothing steps (FLUX export only; default off).
+    # This is a safety valve against VRAM fragmentation / cached allocator growth during very large
+    # modules (e.g. FLUX QKV) and should not affect SDXL unless explicitly enabled.
+    aggressive_cuda_cleanup: bool = False
 
     def __post_init__(self) -> None:  # noqa: C901
         super().__post_init__()

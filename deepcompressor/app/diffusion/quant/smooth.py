@@ -3,6 +3,7 @@
 
 import typing as tp
 
+import gc
 import torch
 import torch.nn as nn
 from tqdm import tqdm
@@ -648,6 +649,11 @@ def smooth_diffusion(
                     layer_cache=layer_cache,
                     layer_kwargs=layer_kwargs,
                 )
+                # FLUX export safety valve: aggressively release cached CUDA blocks between layers
+                # to avoid allocator growth/fragmentation during huge modules (e.g. QKV).
+                if bool(getattr(config, "aggressive_cuda_cleanup", False)) and torch.cuda.is_available():
+                    gc.collect()
+                    torch.cuda.empty_cache()
     else:
         for layer in model.block_structs:
             smooth_diffusion_layer(layer=layer, config=config, smooth_cache=smooth_cache)

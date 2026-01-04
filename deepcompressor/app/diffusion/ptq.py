@@ -968,6 +968,10 @@ def main(config: DiffusionPtqRunConfig, logging_level: int = tools.logging.DEBUG
             pass
         elif _sb > 1:
             config.quant.smooth.proj.sample_batch_size = 1
+    # FLUX export: enable aggressive CUDA cleanup during smoothing to prevent allocator growth/fragmentation
+    # from blowing up peak VRAM on very large modules (e.g. QKV).
+    if bool(config.export_nunchaku_flux) and config.quant:
+        config.quant.aggressive_cuda_cleanup = True
     config.dump(path=config.output.get_running_job_path("config.yaml"))
     tools.logging.setup(path=config.output.get_running_job_path("run.log"), level=logging_level)
     logger = tools.logging.getLogger(__name__)
