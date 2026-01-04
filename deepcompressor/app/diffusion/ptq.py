@@ -954,6 +954,20 @@ def main(config: DiffusionPtqRunConfig, logging_level: int = tools.logging.DEBUG
         config.quant.smooth = SmoothTransfomerConfig(
             proj=SkipBasedSmoothCalibConfig(spans=[("AbsMax", "AbsMax")])
         )
+    # FLUX export: keep smoothing on GPU, but reduce peak VRAM by batching *samples* more conservatively.
+    # This only affects smoothing calibration (not the main quantization) and is gated to FLUX exports.
+    # Rationale: FLUX QKV proj is the peak-memory hotspot; OutputsError calibration evaluates the module
+    # on batches of samples. Smaller `sample_batch_size` reduces peak activation + kernel scratch usage.
+    if bool(config.export_nunchaku_flux) and config.quant and config.quant.smooth and config.quant.smooth.proj:
+        try:
+            _sb = int(getattr(config.quant.smooth.proj, "sample_batch_size", -1))
+        except Exception:
+            _sb = -1
+        if _sb is None or _sb <= 0:
+            # keep as-is (auto) when unspecified
+            pass
+        elif _sb > 1:
+            config.quant.smooth.proj.sample_batch_size = 1
     config.dump(path=config.output.get_running_job_path("config.yaml"))
     tools.logging.setup(path=config.output.get_running_job_path("run.log"), level=logging_level)
     logger = tools.logging.getLogger(__name__)
