@@ -895,7 +895,11 @@ def main(config: DiffusionPtqRunConfig, logging_level: int = tools.logging.DEBUG
     # Official Nunchaku FLUX safetensors include `smooth`/`smooth_orig` for many linears.
     # Enable projection smoothing by default ONLY for FLUX export runs (SDXL unaffected).
     if bool(config.export_nunchaku_flux) and config.quant and config.quant.smooth is None:
-        config.quant.smooth = SmoothTransfomerConfig(proj=SkipBasedSmoothCalibConfig())
+        # SmoothCalibConfig in manual mode requires exactly one span combination.
+        # Match the common default used in configs: spans = [(AbsMax, AbsMax)].
+        config.quant.smooth = SmoothTransfomerConfig(
+            proj=SkipBasedSmoothCalibConfig(spans=[("AbsMax", "AbsMax")])
+        )
     config.dump(path=config.output.get_running_job_path("config.yaml"))
     tools.logging.setup(path=config.output.get_running_job_path("run.log"), level=logging_level)
     logger = tools.logging.getLogger(__name__)
