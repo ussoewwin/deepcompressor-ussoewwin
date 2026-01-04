@@ -17,6 +17,7 @@ from deepcompressor.backend.nunchaku.convert import (
     convert_to_nunchaku_flux_state_dicts,
     convert_to_nunchaku_w4x4y16_linear_state_dict,
 )
+from deepcompressor.calib.config import SkipBasedSmoothCalibConfig, SmoothTransfomerConfig
 from deepcompressor.utils import tools
 
 from .config import DiffusionPtqCacheConfig, DiffusionPtqRunConfig, DiffusionQuantCacheConfig, DiffusionQuantConfig
@@ -397,6 +398,8 @@ def _flux_export_to_nunchaku_single_safetensors(
     transformer,
     float_point: bool = False,
     rank: int | None = None,
+    quantization_config: dict[str, object] | None = None,
+    comfy_config: str | None = None,
 ) -> None:
     """
     Export a single safetensors file that can be loaded by:
@@ -449,19 +452,33 @@ def _flux_export_to_nunchaku_single_safetensors(
         transformer_cfg = transformer_cfg.to_dict()
     if not isinstance(transformer_cfg, dict):
         raise RuntimeError("Failed to read transformer config for Nunchaku export (transformer.config is not dict-like).")
-    # Build Nunchaku-compatible quantization_config metadata.
-    # Nunchaku expects `weight.dtype` and `rank` for correct runtime behavior.
-    qcfg: dict[str, object] = {
-        "method": "svdquant",
-        "weight": {
-            "dtype": "fp4_e2m1_all" if float_point else "int4",
-            # DeepCompressor fp4 configs use group_size=16; keep it explicit for compatibility.
-            "group_size": 16 if float_point else 64,
-        },
+    # Build metadata.
+    #
+    # Align with "official" FLUX safetensors metadata layout:
+    # - model_class: loader hint for ComfyUI/Nunchaku
+    # - comfy_config: ComfyUI-side model config JSON (optional)
+    # - config: diffusers model config JSON
+    # - quantization_config: include both weight and activation sections when available
+    qcfg = quantization_config
+    if qcfg is None:
+        # Fallback (backward compatible) if caller didn't provide full quantization_config.
+        qcfg = {
+            "method": "svdquant",
+            "weight": {
+                "dtype": "fp4_e2m1_all" if float_point else "int4",
+                "group_size": 16 if float_point else 64,
+            },
+        }
+        if rank is not None:
+            qcfg["rank"] = int(rank)
+    metadata: dict[str, str] = {
+        "model_class": "NunchakuFluxTransformer2dModel",
+        "config": json.dumps(transformer_cfg),
+        "quantization_config": json.dumps(qcfg),
     }
-    if rank is not None:
-        qcfg["rank"] = int(rank)
-    metadata = {"config": json.dumps(transformer_cfg), "quantization_config": json.dumps(qcfg)}
+    # Optional comfy_config passthrough (only when explicitly provided/available).
+    if comfy_config:
+        metadata["comfy_config"] = comfy_config
 
     os.makedirs(os.path.dirname(os.path.abspath(output_path)) or ".", exist_ok=True)
     logger.info(f"* Saving Nunchaku FLUX.1-dev transformer safetensors to {output_path}")
@@ -558,6 +575,9 @@ def ptq(  # noqa: C901
         torch.cuda.empty_cache()
 
     # region smooth quantization
+    # Keep smooth state in-memory for export runs (so we can include `smooth`/`smooth_orig`
+    # in the final safetensors without writing intermediate *.pt files).
+    smooth_cache_for_export: dict[str, torch.Tensor] | None = None
     if quant and config.enabled_smooth:
         logger.info("* Smoothing model for quantization")
         tools.logging.Formatter.indent_inc()
@@ -578,6 +598,11 @@ def ptq(  # noqa: C901
                 os.makedirs(cache.dirpath.smooth, exist_ok=True)
                 torch.save(smooth_cache, cache.path.smooth)
                 load_from = cache.path.smooth
+        # Preserve a CPU copy for exporters (FLUX/SDXL) regardless of cache settings.
+        try:
+            smooth_cache_for_export = {k: v.detach().cpu() for k, v in smooth_cache.items()}
+        except Exception:
+            smooth_cache_for_export = None
         if save_path:
             if not copy_on_save and load_from:
                 logger.info(f"- Linking smooth scales to {save_path.smooth}")
@@ -709,8 +734,8 @@ def ptq(  # noqa: C901
             # dequantized weights are stored in the current in-memory model
             dequant_state = {k: v.detach().cpu() for k, v in model.module.state_dict().items()}
             # Load smooth state if available
-            smooth_state = None
-            if config.enabled_smooth and cache and cache.path.smooth and os.path.exists(cache.path.smooth):
+            smooth_state = smooth_cache_for_export
+            if smooth_state is None and config.enabled_smooth and cache and cache.path.smooth and os.path.exists(cache.path.smooth):
                 smooth_state = torch.load(cache.path.smooth, map_location="cpu")
             _flux_export_to_nunchaku_single_safetensors(
                 output_path=export_path,
@@ -721,6 +746,8 @@ def ptq(  # noqa: C901
                 transformer=transformer,
                 float_point=float_point,
                 rank=rank,
+                quantization_config=export_nunchaku_flux.get("quantization_config"),
+                comfy_config=export_nunchaku_flux.get("comfy_config"),
             )
             if export_nunchaku_flux.get("cleanup_run_cache", False) and save_dirpath:
                 try:
@@ -796,6 +823,11 @@ def main(config: DiffusionPtqRunConfig, logging_level: int = tools.logging.DEBUG
     if config.export_nunchaku_flux and config.quant and config.quant.wgts and config.quant.wgts.low_rank:
         _forced_flux_lowrank_exclusive = bool(config.quant.wgts.low_rank.exclusive)
         config.quant.wgts.low_rank.exclusive = False
+    # Mitigate "noisy" outputs for FLUX exports:
+    # Official Nunchaku FLUX safetensors include `smooth`/`smooth_orig` for many linears.
+    # Enable projection smoothing by default ONLY for FLUX export runs (SDXL unaffected).
+    if bool(config.export_nunchaku_flux) and config.quant and config.quant.smooth is None:
+        config.quant.smooth = SmoothTransfomerConfig(proj=SkipBasedSmoothCalibConfig())
     config.dump(path=config.output.get_running_job_path("config.yaml"))
     tools.logging.setup(path=config.output.get_running_job_path("run.log"), level=logging_level)
     logger = tools.logging.getLogger(__name__)
@@ -855,6 +887,7 @@ def main(config: DiffusionPtqRunConfig, logging_level: int = tools.logging.DEBUG
     if bool(config.export_nunchaku_flux):
         ptq_cache = None
         logger.info("* Cache writes: DISABLED for FLUX Nunchaku export (no *.pt cache files will be written)")
+        logger.info("* Smooth: ENABLED (proj) for FLUX Nunchaku export to reduce noisy outputs")
 
     logger.info("=== Configurations ===")
     tools.logging.info(config.formatted_str(), logger=logger)
@@ -934,12 +967,47 @@ def main(config: DiffusionPtqRunConfig, logging_level: int = tools.logging.DEBUG
             transformer = pipeline.transformer if hasattr(pipeline, "transformer") else pipeline.unet
             # Determine float_point from precision (sfp4 = float_point=True, int4 = float_point=False)
             float_point = config.quant.wgts.dtype and "fp" in str(config.quant.wgts.dtype).lower()
+            # Build a Nunchaku-style quantization_config metadata block (match official layouts).
+            def _norm_dtype_name(x: object | None) -> str | None:
+                if x is None:
+                    return None
+                s = str(x)
+                s = s.replace("torch.", "")
+                s = s.replace("QuantDataType.", "")
+                s = s.lower()
+                if s.startswith("sfp"):
+                    s = "fp" + s[3:]
+                if s.startswith("sint"):
+                    s = "int" + s[4:]
+                return s
+
+            wgts = config.quant.wgts
+            ipts = config.quant.ipts
+            weight_scale_dtype = [_norm_dtype_name(d) for d in (getattr(wgts, "scale_dtypes", None) or (None,))]
+            activation_scale_dtype = _norm_dtype_name((getattr(ipts, "scale_dtypes", None) or (None,))[0])
+            qcfg: dict[str, object] = {
+                "method": "svdquant",
+                "weight": {
+                    "dtype": _norm_dtype_name(getattr(wgts, "dtype", None)),
+                    "scale_dtype": weight_scale_dtype,
+                    "group_size": 16 if float_point else 64,
+                },
+                "activation": {
+                    "dtype": _norm_dtype_name(getattr(ipts, "dtype", None)),
+                    "scale_dtype": activation_scale_dtype,
+                    "group_size": 16,
+                },
+            }
+            if config.quant.wgts.low_rank is not None:
+                qcfg["rank"] = int(config.quant.wgts.low_rank.rank)
             export_flux_ctx = {
                 "output_path": config.export_nunchaku_flux,
                 "transformer": transformer,
                 "float_point": float_point,
                 "rank": int(config.quant.wgts.low_rank.rank) if config.quant.wgts.low_rank else 0,
                 "cleanup_run_cache": bool(config.cleanup_run_cache_after_export),
+                "quantization_config": qcfg,
+                "comfy_config": None,
             }
 
         model = ptq(
