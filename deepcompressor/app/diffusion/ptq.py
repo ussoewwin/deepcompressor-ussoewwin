@@ -649,6 +649,21 @@ def ptq(  # noqa: C901
     if quant and config.enabled_smooth:
         logger.info("* Smoothing model for quantization")
         tools.logging.Formatter.indent_inc()
+        # FLUX smoothing is memory-hungry. For FLUX Nunchaku export runs, reduce calib batch_size
+        # during smooth generation to avoid CUDA OOM, then restore.
+        _orig_calib_bs: int | None = None
+        if export_nunchaku_flux and hasattr(config, "calib") and hasattr(config.calib, "batch_size"):
+            try:
+                _orig_calib_bs = int(config.calib.batch_size)
+            except Exception:
+                _orig_calib_bs = None
+            if _orig_calib_bs and _orig_calib_bs > 1:
+                config.calib.batch_size = 1
+                logger.info(
+                    "- FLUX export: forcing calib.batch_size=%s -> %s for smoothing (OOM mitigation)",
+                    _orig_calib_bs,
+                    config.calib.batch_size,
+                )
         load_from = ""
         if load_path and os.path.exists(load_path.smooth):
             load_from = load_path.smooth
@@ -679,6 +694,12 @@ def ptq(  # noqa: C901
                 logger.info(f"- Saving smooth scales to {save_path.smooth}")
                 torch.save(smooth_cache, save_path.smooth)
         del smooth_cache
+        # Restore calib batch size after smoothing
+        if _orig_calib_bs is not None and hasattr(config, "calib") and hasattr(config.calib, "batch_size"):
+            try:
+                config.calib.batch_size = _orig_calib_bs
+            except Exception:
+                pass
         tools.logging.Formatter.indent_dec()
         gc.collect()
         torch.cuda.empty_cache()
