@@ -30,7 +30,7 @@ from deepcompressor.dataset.cache import BaseCalibCacheLoader
 from deepcompressor.dataset.config import BaseDataLoaderConfig
 from deepcompressor.utils.common import tree_map
 
-from ..nn.struct import DiffusionBlockStruct, DiffusionModelStruct
+from ..nn.struct import DiffusionBlockStruct, DiffusionModelStruct, FluxStruct
 from .base import DiffusionDataset
 
 __all__ = [
@@ -379,6 +379,14 @@ class DiffusionCalibCacheLoader(BaseCalibCacheLoader):
             layer_kwargs.pop("encoder_hidden_states", None)
             layer_kwargs.pop("temb", None)
             layer_struct = layer_structs[layer_idx]
+            # For single_transformer_blocks, image_rotary_emb causes size mismatch:
+            # query (4608 = 1024 image + 3584 text) vs image_rotary_emb (1024 image only).
+            # Remove image_rotary_emb for single_transformer_blocks as it's not needed.
+            if (
+                isinstance(model_struct, FluxStruct)
+                and layer_name.startswith(model_struct.single_transformer_blocks_name)
+            ):
+                layer_kwargs.pop("image_rotary_emb", None)
             if isinstance(layer_struct, DiffusionBlockStruct):
                 assert layer_struct.name == layer_name
                 assert layer is layer_struct.module
