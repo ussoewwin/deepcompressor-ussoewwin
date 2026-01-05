@@ -234,14 +234,33 @@ class DiffusionCalibCacheLoader(BaseCalibCacheLoader):
             hidden_states = args[0]
         args_rest = tree_map(lambda x: x.detach().cpu() if isinstance(x, torch.Tensor) else x, args[1:])
         if isinstance(m, (FluxTransformerBlock, JointTransformerBlock, FluxSingleTransformerBlock)):
-            if "encoder_hidden_states" in kwargs:
+            encoder_from_kwargs = "encoder_hidden_states" in kwargs
+            if encoder_from_kwargs:
                 encoder_hidden_states = kwargs.pop("encoder_hidden_states")
+                extra_pos_args = args_rest
             else:
                 encoder_hidden_states = args[1]
+                # args_rest starts at original args[1:] (i.e. [encoder_hidden_states, ...])
+                extra_pos_args = args_rest[1:]
+
+            # FluxSingleTransformerBlock does NOT necessarily return encoder_hidden_states in its outputs,
+            # so relying on prev_layer_outputs to fill it can leave MISSING in the forward path and crash
+            # ConcatCacheAction (expects tensors with `.shape`). Always keep both inputs.
+            if isinstance(m, FluxSingleTransformerBlock):
+                return ModuleForwardInput(
+                    args=[
+                        hidden_states.detach().cpu(),
+                        encoder_hidden_states.detach().cpu(),
+                        *extra_pos_args,
+                    ],
+                    kwargs=kwargs,
+                )
+
             return ModuleForwardInput(
                 args=[
                     hidden_states.detach().cpu() if save_all else MISSING,
                     encoder_hidden_states.detach().cpu() if save_all else MISSING,
+                    *extra_pos_args,
                 ],
                 kwargs=kwargs,
             )
