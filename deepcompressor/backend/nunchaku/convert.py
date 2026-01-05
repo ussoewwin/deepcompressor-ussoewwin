@@ -172,7 +172,31 @@ def convert_to_nunchaku_transformer_block_state_dict(
                         [s if s is not None else first_scale.clone() for s in scale], 
                         dim=0
                     )
-            subscale = None if all(s is None for s in subscale) else torch.concat(subscale, dim=0)
+            if all(s is None for s in subscale):
+                subscale = None
+            else:
+                 # Filter out None subscales and handle mixed None/non-None cases
+                non_none_subscales = [s for s in subscale if s is not None]
+                if not non_none_subscales:
+                    subscale = None
+                elif non_none_subscales[0].numel() == 1:
+                     # All non-None subscales must be per-tensor (numel==1) for consistency
+                    assert all(s.numel() == 1 for s in non_none_subscales), \
+                        "Inconsistent subscale shapes: some per-tensor, some per-channel"
+                    first_subscale = non_none_subscales[0]
+                    subscale = torch.concat(
+                        [
+                            (s if s is not None else first_subscale).view(-1).expand(weight[i].shape[0]).reshape(weight[i].shape[0], 1, 1, 1)
+                            for i, s in enumerate(subscale)
+                        ],
+                        dim=0,
+                    )
+                else:
+                    first_subscale = non_none_subscales[0]
+                    subscale = torch.concat(
+                        [s if s is not None else first_subscale.clone() for s in subscale], 
+                        dim=0
+                    )
             weight = torch.concat(weight, dim=0)
         else:
             weight, bias, scale, subscale = weight[0], bias[0], scale[0], subscale[0]
