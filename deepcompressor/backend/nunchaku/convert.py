@@ -148,17 +148,30 @@ def convert_to_nunchaku_transformer_block_state_dict(
             if all(s is None for s in scale):
                 scale = None
             else:
-                if scale[0].numel() == 1:  # switch from per-tensor to per-channel scale
-                    assert all(s.numel() == 1 for s in scale)
+                # Filter out None scales and handle mixed None/non-None cases
+                non_none_scales = [s for s in scale if s is not None]
+                if not non_none_scales:
+                    scale = None
+                elif non_none_scales[0].numel() == 1:  # switch from per-tensor to per-channel scale
+                    # All non-None scales must be per-tensor (numel==1) for consistency
+                    assert all(s.numel() == 1 for s in non_none_scales), \
+                        "Inconsistent scale shapes: some per-tensor, some per-channel"
+                    # For each weight, use its scale if available, otherwise use the first non-None scale
+                    first_scale = non_none_scales[0]
                     scale = torch.concat(
                         [
-                            s.view(-1).expand(weight[i].shape[0]).reshape(weight[i].shape[0], 1, 1, 1)
+                            (s if s is not None else first_scale).view(-1).expand(weight[i].shape[0]).reshape(weight[i].shape[0], 1, 1, 1)
                             for i, s in enumerate(scale)
                         ],
                         dim=0,
                     )
                 else:
-                    scale = torch.concat(scale, dim=0)
+                    # Per-channel scales: replace None with cloned first non-None scale
+                    first_scale = non_none_scales[0]
+                    scale = torch.concat(
+                        [s if s is not None else first_scale.clone() for s in scale], 
+                        dim=0
+                    )
             subscale = None if all(s is None for s in subscale) else torch.concat(subscale, dim=0)
             weight = torch.concat(weight, dim=0)
         else:
