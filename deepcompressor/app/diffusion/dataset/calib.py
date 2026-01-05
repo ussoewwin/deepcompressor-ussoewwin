@@ -247,6 +247,12 @@ class DiffusionCalibCacheLoader(BaseCalibCacheLoader):
             # so relying on prev_layer_outputs to fill it can leave MISSING in the forward path and crash
             # ConcatCacheAction (expects tensors with `.shape`). Always keep both inputs.
             if isinstance(m, FluxSingleTransformerBlock):
+                # Remove image_rotary_emb for single_transformer_blocks BEFORE layer execution.
+                # In single_transformer_blocks, hidden_states (1024) and encoder_hidden_states (3584)
+                # are concatenated to form query (4608), but image_rotary_emb is only sized for
+                # the image portion (1024). This causes size mismatch in apply_rotary_emb.
+                # FluxSingleTransformerBlock doesn't need image_rotary_emb as it handles RoPE differently.
+                kwargs.pop("image_rotary_emb", None)
                 return ModuleForwardInput(
                     args=[
                         hidden_states.detach().cpu(),
