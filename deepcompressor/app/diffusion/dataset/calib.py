@@ -286,6 +286,16 @@ class DiffusionCalibCacheLoader(BaseCalibCacheLoader):
             assert isinstance(outputs, tuple) and len(outputs) == 2
             encoder_hidden_states, hidden_states = outputs
             return {0: hidden_states.detach().cpu(), 1: encoder_hidden_states.detach().cpu()}
+        elif isinstance(m, FluxSingleTransformerBlock):
+            # FluxSingleTransformerBlock.forward() returns only hidden_states (single tensor).
+            # But for smoothing calibration, we need encoder_hidden_states to be preserved
+            # across blocks (it doesn't change in single_transformer_blocks).
+            # The encoder_hidden_states comes from the first single_transformer_block's input
+            # and is passed unchanged through all single_transformer_blocks.
+            assert isinstance(outputs, torch.Tensor)
+            # Return only hidden_states; encoder_hidden_states is preserved in layer_kwargs
+            # and will be passed to the next block via prev_layer_outputs.update().
+            return {0: outputs.detach().cpu()}
         else:
             return super()._convert_layer_outputs(m, outputs)
 
