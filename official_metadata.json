@@ -1,0 +1,6 @@
+{
+  "config": "{\n  \"_class_name\": \"FluxTransformer2DModel\",\n  \"_diffusers_version\": \"0.30.0.dev0\",\n  \"_name_or_path\": \"../checkpoints/flux-dev/transformer\",\n  \"attention_head_dim\": 128,\n  \"guidance_embeds\": true,\n  \"in_channels\": 64,\n  \"joint_attention_dim\": 4096,\n  \"num_attention_heads\": 24,\n  \"num_layers\": 19,\n  \"num_single_layers\": 38,\n  \"patch_size\": 1,\n  \"pooled_projection_dim\": 768\n}\n",
+  "comfy_config": "{\n  \"model_class\": \"Flux\",\n  \"model_config\": {\n    \"axes_dim\": [\n      16,\n      56,\n      56\n    ],\n    \"context_in_dim\": 4096,\n    \"depth\": 19,\n    \"depth_single_blocks\": 38,\n    \"disable_unet_model_creation\": true,\n    \"guidance_embed\": true,\n    \"hidden_size\": 3072,\n    \"image_model\": \"flux\",\n    \"in_channels\": 16,\n    \"mlp_ratio\": 4.0,\n    \"num_heads\": 24,\n    \"out_channels\": 16,\n    \"patch_size\": 2,\n    \"qkv_bias\": true,\n    \"theta\": 10000,\n    \"vec_in_dim\": 768\n  }\n}",
+  "quantization_config": "{\"method\": \"svdquant\", \"weight\": {\"dtype\": \"fp4_e2m1_all\", \"scale_dtype\": [null, \"fp8_e4m3_nan\"], \"group_size\": 16}, \"activation\": {\"dtype\": \"fp4_e2m1_all\", \"scale_dtype\": \"fp8_e4m3_nan\", \"group_size\": 16}}",
+  "model_class": "NunchakuFluxTransformer2dModel"
+}

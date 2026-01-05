@@ -418,11 +418,16 @@ def convert_to_nunchaku_flux_state_dicts(
 
 
 if __name__ == "__main__":
+    import json
+
     parser = argparse.ArgumentParser()
     parser.add_argument("--quant-path", type=str, required=True, help="path to the quantization checkpoint directory.")
     parser.add_argument("--output-root", type=str, default="", help="root to the output checkpoint directory.")
     parser.add_argument("--model-name", type=str, default=None, help="name of the model.")
     parser.add_argument("--float-point", action="store_true", help="use float-point 4-bit quantization.")
+    parser.add_argument("--lora-rank", type=int, default=32, help="LoRA rank for svdquant (default: 32).")
+    parser.add_argument("--single-file", action="store_true", default=True,
+                        help="output as single safetensors file (ComfyUI compatible).")
     args = parser.parse_args()
     if not args.output_root:
         args.output_root = args.quant_path
@@ -450,8 +455,77 @@ if __name__ == "__main__":
         branch_dict=branch_dict,
         float_point=args.float_point,
     )
+
+    # Generate metadata for ComfyUI compatibility
+    quant_dtype = "fp4_e2m1_all" if args.float_point else "fp4_e2m1_all"
+    config_dict = {
+        "_class_name": "FluxTransformer2DModel",
+        "_diffusers_version": "0.30.0.dev0",
+        "_name_or_path": "black-forest-labs/FLUX.1-dev",
+        "attention_head_dim": 128,
+        "guidance_embeds": True,
+        "in_channels": 64,
+        "joint_attention_dim": 4096,
+        "num_attention_heads": 24,
+        "num_layers": 19,
+        "num_single_layers": 38,
+        "patch_size": 1,
+        "pooled_projection_dim": 768
+    }
+    comfy_config_dict = {
+        "model_class": "Flux",
+        "model_config": {
+            "axes_dim": [16, 56, 56],
+            "context_in_dim": 4096,
+            "depth": 19,
+            "depth_single_blocks": 38,
+            "disable_unet_model_creation": True,
+            "guidance_embed": True,
+            "hidden_size": 3072,
+            "image_model": "flux",
+            "in_channels": 16,
+            "mlp_ratio": 4.0,
+            "num_heads": 24,
+            "out_channels": 16,
+            "patch_size": 2,
+            "qkv_bias": True,
+            "theta": 10000,
+            "vec_in_dim": 768
+        }
+    }
+    quantization_config_dict = {
+        "method": "svdquant",
+        "weight": {
+            "dtype": quant_dtype,
+            "scale_dtype": [None, "fp8_e4m3_nan"],
+            "group_size": 16
+        },
+        "activation": {
+            "dtype": quant_dtype,
+            "scale_dtype": "fp8_e4m3_nan",
+            "group_size": 16
+        }
+    }
+    metadata = {
+        "config": json.dumps(config_dict, indent=2) + "\n",
+        "comfy_config": json.dumps(comfy_config_dict, indent=2),
+        "quantization_config": json.dumps(quantization_config_dict),
+        "model_class": "NunchakuFluxTransformer2dModel"
+    }
+
     output_dirpath = os.path.join(args.output_root, model_name)
     os.makedirs(output_dirpath, exist_ok=True)
-    safetensors.torch.save_file(converted_state_dict, os.path.join(output_dirpath, "transformer_blocks.safetensors"))
-    safetensors.torch.save_file(other_state_dict, os.path.join(output_dirpath, "unquantized_layers.safetensors"))
-    print(f"Quantized model saved to {output_dirpath}.")
+
+    if args.single_file:
+        # Merge all tensors into a single file (ComfyUI compatible)
+        merged_state_dict = {**converted_state_dict, **other_state_dict}
+        output_filename = f"svdq-{quant_dtype.replace('_', '-').replace('e2m1-all', 'fp4')}_r{args.lora_rank}-flux.1-dev.safetensors"
+        output_path = os.path.join(output_dirpath, output_filename)
+        safetensors.torch.save_file(merged_state_dict, output_path, metadata=metadata)
+        print(f"Quantized model saved to {output_path}")
+        print(f"Metadata: {list(metadata.keys())}")
+    else:
+        # Legacy: separate files without metadata
+        safetensors.torch.save_file(converted_state_dict, os.path.join(output_dirpath, "transformer_blocks.safetensors"))
+        safetensors.torch.save_file(other_state_dict, os.path.join(output_dirpath, "unquantized_layers.safetensors"))
+        print(f"Quantized model saved to {output_dirpath}.")

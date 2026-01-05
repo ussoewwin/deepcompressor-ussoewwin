@@ -544,9 +544,33 @@ def _flux_export_to_nunchaku_single_safetensors(
         "config": json.dumps(transformer_cfg),
         "quantization_config": json.dumps(qcfg),
     }
-    # Optional comfy_config passthrough (only when explicitly provided/available).
+    # Generate or passthrough comfy_config for ComfyUI compatibility.
     if comfy_config:
         metadata["comfy_config"] = comfy_config
+    else:
+        # Default FLUX.1-dev comfy_config matching official Nunchaku format.
+        default_comfy_config = {
+            "model_class": "Flux",
+            "model_config": {
+                "axes_dim": [16, 56, 56],
+                "context_in_dim": 4096,
+                "depth": 19,
+                "depth_single_blocks": 38,
+                "disable_unet_model_creation": True,
+                "guidance_embed": True,
+                "hidden_size": 3072,
+                "image_model": "flux",
+                "in_channels": 16,
+                "mlp_ratio": 4.0,
+                "num_heads": 24,
+                "out_channels": 16,
+                "patch_size": 2,
+                "qkv_bias": True,
+                "theta": 10000,
+                "vec_in_dim": 768
+            }
+        }
+        metadata["comfy_config"] = json.dumps(default_comfy_config, indent=2)
 
     os.makedirs(os.path.dirname(os.path.abspath(output_path)) or ".", exist_ok=True)
     logger.info(f"* Saving Nunchaku FLUX.1-dev transformer safetensors to {output_path}")
