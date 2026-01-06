@@ -220,26 +220,38 @@ def convert_to_nunchaku_transformer_block_state_dict(
 
         # Low-rank branch (SVDQuant) handling:
         # - For fused projections (e.g. qkv), we must fuse the branch consistently with weight concat.
-        # - DeepCompressor stores branches per original linear (to_q/to_k/to_v), while Nunchaku expects a fused qkv branch.
+        # - DeepCompressor stores branches for fused QKV groups under the FIRST module name only
+        #   (e.g. "attn.to_q" for qkv_proj, "attn.add_q_proj" for qkv_proj_context).
+        # - The branch contains a shared "a.weight" (lora_down) and concatenated "b.weight" (lora_up).
         branch_names = branch_name_map.get(converted_local_name, "")
         if isinstance(branch_names, list):
-            branches = [branch_dict.get(f"{block_name}.{bn}", None) for bn in branch_names]
-            if any(b is None for b in branches):
-                branch = None
+            # For fused QKV, branch is stored under the FIRST name only (the "q" projection)
+            first_branch_name = branch_names[0]
+            first_branch = branch_dict.get(f"{block_name}.{first_branch_name}", None)
+            if first_branch is not None:
+                # Branch exists under the first name - this is the fused branch for the entire QKV group
+                branch = (first_branch["a.weight"], first_branch["b.weight"])
             else:
-                a0 = branches[0]["a.weight"]
-                if not all(torch.equal(b["a.weight"], a0) for b in branches[1:]):
-                    raise ValueError(
-                        f"Cannot fuse low-rank branch for {block_name}.{converted_local_name}: "
-                        "down projection (a.weight) differs across candidates. "
-                        "Please quantize with a shared low-rank basis for fused qkv exports."
-                    )
-                b_cat = torch.concat([b["b.weight"] for b in branches], dim=0)
-                branch = (a0, b_cat)
+                # Try legacy approach: check if each individual module has a branch
+                branches = [branch_dict.get(f"{block_name}.{bn}", None) for bn in branch_names]
+                if all(b is not None for b in branches):
+                    # All individual branches exist, fuse them
+                    a0 = branches[0]["a.weight"]
+                    if not all(torch.equal(b["a.weight"], a0) for b in branches[1:]):
+                        raise ValueError(
+                            f"Cannot fuse low-rank branch for {block_name}.{converted_local_name}: "
+                            "down projection (a.weight) differs across candidates. "
+                            "Please quantize with a shared low-rank basis for fused qkv exports."
+                        )
+                    b_cat = torch.concat([b["b.weight"] for b in branches], dim=0)
+                    branch = (a0, b_cat)
+                else:
+                    branch = None
         else:
             branch = branch_dict.get(f"{block_name}.{branch_names}", None) if branch_names else None
             if branch is not None:
                 branch = (branch["a.weight"], branch["b.weight"])
+
 
         if scale is None:
             assert smooth is None and branch is None and subscale is None
