@@ -1,0 +1,27 @@
+=== transformer_blocks.0 add_* keys ===
+transformer_blocks.0.norm_added_k.weight
+transformer_blocks.0.norm_added_q.weight
+
+Total add_* keys: 2
+
+=== transformer_blocks.0 qkv_proj* keys ===
+single_transformer_blocks.0.qkv_proj.bias
+single_transformer_blocks.0.qkv_proj.qweight
+single_transformer_blocks.0.qkv_proj.smooth
+single_transformer_blocks.0.qkv_proj.smooth_orig
+single_transformer_blocks.0.qkv_proj.wcscales
+single_transformer_blocks.0.qkv_proj.wscales
+transformer_blocks.0.qkv_proj.bias
+transformer_blocks.0.qkv_proj.qweight
+transformer_blocks.0.qkv_proj.smooth
+transformer_blocks.0.qkv_proj.smooth_orig
+transformer_blocks.0.qkv_proj.wcscales
+transformer_blocks.0.qkv_proj.wscales
+transformer_blocks.0.qkv_proj_context.bias
+transformer_blocks.0.qkv_proj_context.weight
+
+=== Summary ===
+qkv_proj.qweight exists: True
+qkv_proj_context.qweight exists: False
+qkv_proj_context.weight exists: True
+Total transformer_blocks: 19

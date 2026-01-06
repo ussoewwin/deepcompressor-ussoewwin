@@ -84,8 +84,12 @@ def calibrate_diffusion_block_low_rank_branch(  # noqa: C901
                     assert parent.is_joint_attn()
                     if field_name in ("q_proj", "to_q"):
                         modules, module_names = parent.qkv_proj, parent.qkv_proj_names
-                    elif field_name in ("add_k_proj", "to_k") and parent.add_k_proj is not None:
+                    elif field_name in ("add_q_proj",) and parent.add_q_proj is not None:
+                        # add_q_proj starting point for joint attention add_qkv_proj group
                         modules, module_names = parent.add_qkv_proj, parent.add_qkv_proj_names
+                    elif field_name in ("add_k_proj", "add_v_proj"):
+                        # add_k_proj and add_v_proj are handled by add_q_proj
+                        continue
                     else:
                         continue
         
@@ -322,8 +326,13 @@ def quantize_diffusion_block_weights(
                     assert parent.is_joint_attn()
                     if field_name in ("q_proj", "to_q"):
                         module_names = list(parent.qkv_proj_names)
-                    elif field_name in ("add_k_proj", "to_k") and parent.add_k_proj is not None:
+                    elif field_name in ("add_q_proj",) and parent.add_q_proj is not None:
+                        # add_q_proj starting point for joint attention add_qkv_proj group
                         module_names = list(parent.add_qkv_proj_names)
+                    elif field_name in ("add_k_proj", "add_v_proj"):
+                        # add_k_proj and add_v_proj are handled by add_q_proj
+                        processed.add(module_name)
+                        continue
                     else:
                         processed.add(module_name)
                         continue

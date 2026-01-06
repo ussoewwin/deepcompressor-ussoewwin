@@ -1,0 +1,17 @@
+=== User Model: transformer_blocks.0.qkv_proj_context ===
+  transformer_blocks.0.qkv_proj_context.bias
+  transformer_blocks.0.qkv_proj_context.weight
+
+=== Official Model: transformer_blocks.0.qkv_proj_context ===
+  transformer_blocks.0.qkv_proj_context.bias
+  transformer_blocks.0.qkv_proj_context.lora_down
+  transformer_blocks.0.qkv_proj_context.lora_up
+  transformer_blocks.0.qkv_proj_context.qweight
+  transformer_blocks.0.qkv_proj_context.smooth
+  transformer_blocks.0.qkv_proj_context.smooth_orig
+  transformer_blocks.0.qkv_proj_context.wcscales
+  transformer_blocks.0.qkv_proj_context.wscales
+
+=== Key differences ===
+In user but not official: {'weight'}
+In official but not user: {'smooth_orig', 'lora_down', 'lora_up', 'smooth', 'wcscales', 'wscales', 'qweight'}
