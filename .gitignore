@@ -173,3 +173,7 @@ runs/
 exps/
 wandb
 wandb/
+
+# External submodules (should not be committed)
+nunchaku/
+ComfyUI-nunchaku/
