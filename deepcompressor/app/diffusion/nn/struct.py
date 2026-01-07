@@ -355,7 +355,12 @@ class DiffusionAttentionStruct(AttentionStruct):
         **kwargs,
     ) -> "DiffusionAttentionStruct":
         # FluxAttention doesn't have is_cross_attention attribute
-        if isinstance(module, FluxAttention):
+        if parent is not None and isinstance(parent.module, FluxSingleTransformerBlock):
+            q_proj, k_proj, v_proj = module.to_q, module.to_k, module.to_v
+            add_q_proj, add_k_proj, add_v_proj, add_o_proj = None, None, None, None
+            q_proj_rname, k_proj_rname, v_proj_rname = "to_q", "to_k", "to_v"
+            add_q_proj_rname, add_k_proj_rname, add_v_proj_rname, add_o_proj_rname = "", "", "", ""
+        elif isinstance(module, FluxAttention):
             # FluxAttention always has to_q, to_k, to_v
             q_proj, k_proj, v_proj = module.to_q, module.to_k, module.to_v
             add_q_proj = getattr(module, "add_q_proj", None)
@@ -367,11 +372,6 @@ class DiffusionAttentionStruct(AttentionStruct):
             add_k_proj_rname = "add_k_proj" if add_k_proj is not None else ""
             add_v_proj_rname = "add_v_proj" if add_v_proj is not None else ""
             add_o_proj_rname = "to_add_out" if add_o_proj is not None else ""
-        elif parent is not None and isinstance(parent.module, FluxSingleTransformerBlock):
-            q_proj, k_proj, v_proj = module.to_q, module.to_k, module.to_v
-            add_q_proj, add_k_proj, add_v_proj, add_o_proj = None, None, None, None
-            q_proj_rname, k_proj_rname, v_proj_rname = "to_q", "to_k", "to_v"
-            add_q_proj_rname, add_k_proj_rname, add_v_proj_rname, add_o_proj_rname = "", "", "", ""
         elif module.is_cross_attention:
             q_proj, k_proj, v_proj = module.to_q, None, None
             add_q_proj, add_k_proj, add_v_proj, add_o_proj = None, module.to_k, module.to_v, None
