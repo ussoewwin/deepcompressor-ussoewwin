@@ -1,4 +1,4 @@
-# FLUX.1-dev R32 SVDQ-FP4 Nunchaku configuration
+# FLUX.1-dev R32 SVDQ-FP4 Nunchaku configuration (Low Memory)
 pipeline:
   name: flux.1-dev
   path: /root/models/flux1-dev.safetensors
@@ -9,15 +9,15 @@ eval:
   protocol: fmeuler{num_steps}-g{guidance_scale}
 quant:
   calib:
-    batch_size: 16
+    batch_size: 4
   wgts:
     calib_range:
-      element_batch_size: 64
-      sample_batch_size: 16
+      element_batch_size: 16
+      sample_batch_size: 4
       element_size: 512
       sample_size: -1
     low_rank:
-      sample_batch_size: 16
+      sample_batch_size: 4
       sample_size: -1
       rank: 32
       exclusive: false
@@ -34,8 +34,8 @@ quant:
     enable_calib_range: false
   ipts:
     calib_range:
-      element_batch_size: 64
-      sample_batch_size: 16
+      element_batch_size: 16
+      sample_batch_size: 4
       element_size: 512
       sample_size: -1
     skips: 
@@ -50,17 +50,17 @@ quant:
     - up_sample
   opts:
     calib_range:
-      element_batch_size: 64
-      sample_batch_size: 16
+      element_batch_size: 16
+      sample_batch_size: 4
       element_size: 512
       sample_size: -1
   smooth:
     proj:
       element_batch_size: -1
-      sample_batch_size: 16
+      sample_batch_size: 4
       element_size: -1
       sample_size: -1
     attn:
-      sample_batch_size: 16
+      sample_batch_size: 4
       sample_size: -1
   enable_smooth: false
