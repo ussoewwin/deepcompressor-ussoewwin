@@ -18,10 +18,10 @@ quant:
       element_batch_size: 16
       sample_batch_size: 4
       element_size: 512
-      sample_size: 32
+      sample_size: -1
     low_rank:
       sample_batch_size: 4
-      sample_size: 32
+      sample_size: -1
       rank: 32
       exclusive: false
       compensate: true
@@ -40,7 +40,7 @@ quant:
       element_batch_size: 16
       sample_batch_size: 4
       element_size: 512
-      sample_size: 32
+      sample_size: -1
     skips: 
     - embed
     - resblock_shortcut
@@ -56,14 +56,14 @@ quant:
       element_batch_size: 16
       sample_batch_size: 4
       element_size: 512
-      sample_size: 32
+      sample_size: -1
   smooth:
     proj:
       element_batch_size: -1
       sample_batch_size: 4
       element_size: -1
-      sample_size: 32
+      sample_size: -1
     attn:
       sample_batch_size: 4
-      sample_size: 32
+      sample_size: -1
   enable_smooth: false
