@@ -1010,12 +1010,13 @@ def main(config: DiffusionPtqRunConfig, logging_level: int = tools.logging.DEBUG
     # Mitigate "noisy" outputs for FLUX exports:
     # Official Nunchaku FLUX safetensors include `smooth`/`smooth_orig` for many linears.
     # Enable projection smoothing by default ONLY for FLUX export runs (SDXL unaffected).
-    if bool(config.export_nunchaku_flux) and config.quant and config.quant.smooth is None:
-        # SmoothCalibConfig in manual mode requires exactly one span combination.
-        # Match the common default used in configs: spans = [(AbsMax, AbsMax)].
-        config.quant.smooth = SmoothTransfomerConfig(
-            proj=SkipBasedSmoothCalibConfig(spans=[("AbsMax", "AbsMax")])
-        )
+    # [ANTIGRAVITY] DISABLED AUTO-ENABLEMENT: User explicitly wants to disable smoothing.
+    # if bool(config.export_nunchaku_flux) and config.quant and config.quant.smooth is None:
+    #     # SmoothCalibConfig in manual mode requires exactly one span combination.
+    #     # Match the common default used in configs: spans = [(AbsMax, AbsMax)].
+    #     config.quant.smooth = SmoothTransfomerConfig(
+    #         proj=SkipBasedSmoothCalibConfig(spans=[("AbsMax", "AbsMax")])
+    #     )
     # FLUX export: keep smoothing on GPU, but reduce peak VRAM by batching *samples* more conservatively.
     # This only affects smoothing calibration (not the main quantization) and is gated to FLUX exports.
     # Rationale: FLUX QKV proj is the peak-memory hotspot; OutputsError calibration evaluates the module
