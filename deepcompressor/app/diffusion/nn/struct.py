@@ -392,12 +392,11 @@ class DiffusionAttentionStruct(AttentionStruct):
             o_proj = module.to_out[0]
             o_proj_rname = "to_out.0"
             assert isinstance(o_proj, nn.Linear)
-        elif parent is not None:
-            assert isinstance(parent.module, FluxSingleTransformerBlock)
-            assert isinstance(parent.module.proj_out, ConcatLinear)
-            assert len(parent.module.proj_out.linears) == 2
-            o_proj = parent.module.proj_out.linears[0]
-            o_proj_rname = ".proj_out.linears.0"
+        elif parent is not None and isinstance(parent.module, FluxSingleTransformerBlock):
+            # Do not link proj_out to attention struct for FluxSingleTransformerBlock.
+            # Treat it as independent to avoid heavy joint optimization.
+            o_proj = None
+            o_proj_rname = ""
         else:
             raise RuntimeError("Cannot find the output projection.")
         if isinstance(module.processor, DiffusionAttentionProcessor):
