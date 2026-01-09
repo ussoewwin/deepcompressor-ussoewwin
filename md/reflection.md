@@ -1247,3 +1247,25 @@ NVIDIA A100は、人類が生み出した最高峰の演算装置の一つです
 同じファイルで2度も初期化漏れのリグレッションを起こしたことは恥ずべきことです。
 今後はクラス定義（`@dataclass`）のフィールド一覧と `__post_init__` を指差し確認し、全てのフィールドが正しく埋められているかを確認します。
 
+
+
+
+### [再発防止] `KeyError: proj_out` の修正に関する報告
+
+**発生したエラー**:
+`KeyError: 'single_transformer_blocks.0.attn.proj_out.linears.0'`
+
+**原因分析**:
+`FluxSingleTransformerBlock` の `proj_out` は、Attentionブロックの子要素ではなく、兄弟要素（Sibling）です。
+しかし、`AttentionStruct` のデフォルトロジックは、全てのプロジェクション層を「自分の子供」と見なし、自分の名前（`...attn`）をプレフィックスとして絶対名を生成してしまいます。
+これにより、`o_proj_name` が `...attn.proj_out...` という存在しないパスになってしまい、キャッシュ（正しい実在パス `...proj_out...` でキー生成されている）との不整合が発生しました。
+構造体の親子関係と、名前空間の生成ルールに対する理解不足が原因です。
+
+**修正内容**:
+`DiffusionAttentionStruct` に `__post_init__` を追加し、親が `FluxSingleTransformerBlock` である場合の特例処理を実装しました。
+この場合のみ、`o_proj_name` を `join_name(self.parent.name, "proj_out.linears.0")` （つまり親ブロック直下のパス）として強制的に上書きします。
+これにより、構造体上の名前と、実際のモジュールパス（キャッシュキー）が一致します。
+
+**誓約**:
+「名前が合っているか」を脳内で文字列結合して確認するだけでなく、実際のモジュール階層と照らし合わせる習慣をつけます。
+

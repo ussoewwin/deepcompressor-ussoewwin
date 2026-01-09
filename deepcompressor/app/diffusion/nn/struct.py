@@ -343,6 +343,17 @@ class DiffusionAttentionStruct(AttentionStruct):
             attn_kwargs = {}
         return attn_kwargs
 
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        # Fix for FluxSingleTransformerBlock where o_proj is a sibling, not a child of attn
+        # and has been assigned to attn struct for joint optimization.
+        if self.parent is not None and isinstance(self.parent.module, FluxSingleTransformerBlock):
+            from ...utils.common import join_name
+            if self.o_proj is not None:
+                # o_proj matches parent.module.proj_out.linears[0]
+                # Its absolute name is join_name(parent.name, "proj_out.linears.0")
+                self.o_proj_name = join_name(self.parent.name, "proj_out.linears.0")
+
     @staticmethod
     def _default_construct(
         module: Attention,
