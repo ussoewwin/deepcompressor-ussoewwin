@@ -10,6 +10,8 @@ eval:
 quant:
   calib:
     batch_size: 4
+    data: qdiff
+    num_samples: 32
   wgts:
     calib_range:
       element_batch_size: 16
