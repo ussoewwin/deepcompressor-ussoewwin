@@ -11,6 +11,7 @@ quant:
   calib:
     batch_size: 4
     data: qdiff-r32
+    path: datasets/{dtype}/{model}/{protocol}/{data}/s32
     num_samples: 32
   wgts:
     calib_range:
