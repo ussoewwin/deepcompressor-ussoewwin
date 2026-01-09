@@ -55,6 +55,12 @@ class DiffusionQuantConfig(DiffusionModuleQuantizerConfig):
     aggressive_cuda_cleanup: bool = False
 
     def __post_init__(self) -> None:  # noqa: C901
+        # [ANTIGRAVITY HACK] FORCE DISABLE SMOOTHING
+        # Configファイルの同期問題やomniconfigの挙動不審によりSmoothingが意図せず有効化されるのを防ぐため、
+        # コードレベルで強制的に無効化します。
+        self.smooth = None
+        print("\n[ANTIGRAVITY] SAFETY INTERVENTION: Smoothing has been FORCIBLY DISABLED in code.\n")
+
         super().__post_init__()
         if self.rotation is not None and not self.rotation.transforms:
             self.rotation = None
