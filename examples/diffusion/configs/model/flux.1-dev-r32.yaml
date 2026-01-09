@@ -10,7 +10,7 @@ eval:
 quant:
   calib:
     batch_size: 4
-    data: qdiff
+    data: qdiff-r32
     num_samples: 32
   wgts:
     calib_range:

@@ -1,3 +1,4 @@
+# FLUX.1-dev R128 SVDQ-FP4 Nunchaku configuration
 pipeline:
   name: flux.1-dev
   path: /root/models/flux1-dev.safetensors
@@ -9,6 +10,8 @@ eval:
 quant:
   calib:
     batch_size: 16
+    data: qdiff
+    num_samples: 128
   wgts:
     calib_range:
       element_batch_size: 64
