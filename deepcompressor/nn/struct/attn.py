@@ -301,6 +301,13 @@ class AttentionStruct(BaseModuleStruct):
 
     def __post_init__(self) -> None:
         super().__post_init__()
+        self.qkv_proj_key = join_name(self.key, self.qkv_proj_rkey, sep="_")
+        self.add_qkv_proj_key = join_name(self.key, self.add_qkv_proj_rkey, sep="_")
+        self.out_proj_key = join_name(self.key, self.out_proj_rkey, sep="_")
+        self.add_out_proj_key = join_name(self.key, self.add_out_proj_rkey, sep="_")
+        self.q_key = join_name(self.key, self.q_rkey, sep="_")
+        self.k_key = join_name(self.key, self.k_rkey, sep="_")
+        self.v_key = join_name(self.key, self.v_rkey, sep="_")
         if self.o_proj is not None:
             assert self.o_proj.weight.shape[1] == self.config.num_query_channels
             assert self.o_proj.weight.shape[0] == self.config.num_channels
