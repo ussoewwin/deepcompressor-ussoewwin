@@ -1,7 +1,7 @@
 pipeline:
   name: sdxl
   path: stabilityai/stable-diffusion-xl-base-1.0
-  unet_path: D:/nu/waiREALCN_v150.safetensors
+  unet_path: D:/nu/waiANIPONYXL_v140.safetensors
   dtype: torch.bfloat16
 eval:
   num_steps: 50
