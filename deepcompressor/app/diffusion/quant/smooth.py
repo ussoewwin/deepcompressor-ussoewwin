@@ -158,6 +158,8 @@ def smooth_diffusion_out_proj(  # noqa: C901
     fuse_smooth = not attn.config.linear_attn and config.smooth.proj.fuse_when_possible
     prevs = [attn.v_proj, attn.add_v_proj] if fuse_smooth else None
     if len(module_keys) == 1 and module_keys[0] == attn.out_proj_key:
+        if attn.o_proj is None:
+            return smooth_cache
         logger.debug("- %s.out_proj", attn.name)
         module_key = attn.out_proj_key
         cache_key = attn.o_proj_name
@@ -185,6 +187,9 @@ def smooth_diffusion_out_proj(  # noqa: C901
         config_wgts = config.wgts
         if config.enabled_extra_wgts and config.extra_wgts.is_enabled_for(module_key):
             config_wgts = config.extra_wgts
+        extra_modules = []
+        if attn.o_proj is not None:
+             extra_modules.append(attn.o_proj)
         smooth_cache[cache_key] = smooth_linear_modules(
             prevs,
             attn.add_o_proj,
@@ -195,7 +200,7 @@ def smooth_diffusion_out_proj(  # noqa: C901
             inputs=block_cache[attn.add_o_proj_name].inputs if block_cache else None,
             eval_inputs=block_cache[attn.add_o_proj_name].inputs if block_cache else None,
             eval_module=attn.add_o_proj,
-            extra_modules=[attn.o_proj],
+            extra_modules=extra_modules,
             develop_dtype=config.develop_dtype,
         )
     else:
@@ -206,9 +211,12 @@ def smooth_diffusion_out_proj(  # noqa: C901
         config_wgts = config.wgts
         if config.enabled_extra_wgts and config.extra_wgts.is_enabled_for(module_key):
             config_wgts = config.extra_wgts
+        modules = [attn.o_proj, attn.add_o_proj]
+        if attn.o_proj is None:
+            modules = [attn.add_o_proj]
         smooth_cache[cache_key] = smooth_linear_modules(
             prevs,
-            [attn.o_proj, attn.add_o_proj],
+            modules,
             scale=smooth_cache.get(cache_key, None),
             config=config.smooth.proj,
             weight_quantizer=Quantizer(config_wgts, key=module_key, low_rank=config.wgts.low_rank),
@@ -229,7 +237,8 @@ def smooth_diffusion_out_proj(  # noqa: C901
         for o_proj in [attn.o_proj, attn.add_o_proj]:
             if o_proj is not None:
                 ActivationSmoother(smooth_cache[cache_key], channels_dim=-1).as_hook().register(o_proj)
-    attn.o_proj.in_smooth_cache_key = cache_key
+    if attn.o_proj is not None:
+        attn.o_proj.in_smooth_cache_key = cache_key
     if attn.add_o_proj is not None:
         attn.add_o_proj.in_smooth_cache_key = cache_key
     return smooth_cache

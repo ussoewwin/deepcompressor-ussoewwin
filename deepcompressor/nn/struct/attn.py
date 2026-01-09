@@ -177,7 +177,7 @@ class AttentionStruct(BaseModuleStruct):
     """Key projection layer for self or joint attention."""
     v_proj: nn.Linear | None
     """Value projection layer for self or joint attention."""
-    o_proj: nn.Linear
+    o_proj: nn.Linear | None
     """Output projection."""
     add_q_proj: nn.Linear | None
     """Additional query projection layer for joint attention."""
@@ -301,64 +301,6 @@ class AttentionStruct(BaseModuleStruct):
 
     def __post_init__(self) -> None:
         super().__post_init__()
-        assert self.o_proj is not None
-        if self.add_k_proj is None:  # self attention
-            assert self.q_proj is not None and self.k_proj is not None and self.v_proj is not None
-            assert self.add_q_proj is None and self.add_v_proj is None
-            assert self.add_o_proj is None
-        elif self.k_proj is None:  # cross attention
-            assert self.q_proj is not None and self.add_v_proj is not None
-            assert self.add_q_proj is None and self.v_proj is None
-            assert self.add_o_proj is None
-        else:  # joint attention
-            assert self.q_proj is not None and self.add_q_proj is not None
-            assert self.v_proj is not None and self.add_v_proj is not None
-            # self.add_o_proj can be None or not
-        for field_name in (
-            "q_proj",
-            "k_proj",
-            "v_proj",
-            "o_proj",
-            "add_q_proj",
-            "add_k_proj",
-            "add_v_proj",
-            "add_o_proj",
-            "q",
-            "k",
-            "v",
-        ):
-            rname = getattr(self, f"{field_name}_rname")
-            if getattr(self, field_name) is not None or rname:
-                assert rname, f"`{field_name}_rname` must not be empty if `{field_name}` is not None"
-                setattr(self, f"{field_name}_name", join_name(self.name, rname))
-            else:
-                setattr(self, f"{field_name}_name", "")
-        self.qkv_proj_key = join_name(self.key, self.qkv_proj_rkey, sep="_")
-        self.add_qkv_proj_key = join_name(self.key, self.add_qkv_proj_rkey, sep="_")
-        self.out_proj_key = join_name(self.key, self.out_proj_rkey, sep="_")
-        self.add_out_proj_key = join_name(self.key, self.add_out_proj_rkey, sep="_")
-        self.q_key = join_name(self.key, self.q_rkey, sep="_")
-        self.k_key = join_name(self.key, self.k_rkey, sep="_")
-        self.v_key = join_name(self.key, self.v_rkey, sep="_")
-        # region assertions
-        if self.q_proj is not None:
-            assert self.q_proj.weight.shape[1] == self.config.num_channels
-            assert self.q_proj.weight.shape[0] == self.config.num_query_channels
-        if self.add_q_proj is not None:
-            assert self.add_q_proj.weight.shape[1] == self.config.num_add_channels
-            assert self.add_q_proj.weight.shape[0] == self.config.num_query_channels
-        if self.k_proj is not None:
-            assert self.k_proj.weight.shape[1] == self.config.num_channels
-            assert self.k_proj.weight.shape[0] == self.config.num_key_value_channels
-        if self.add_k_proj is not None:
-            assert self.add_k_proj.weight.shape[0] == self.config.num_key_value_channels
-            assert self.add_k_proj.weight.shape[1] == self.config.num_add_channels
-        if self.v_proj is not None:
-            assert self.v_proj.weight.shape[1] == self.config.num_channels
-            assert self.v_proj.weight.shape[0] == self.config.num_key_value_channels
-        if self.add_v_proj is not None:
-            assert self.add_v_proj.weight.shape[0] == self.config.num_key_value_channels
-            assert self.add_v_proj.weight.shape[1] == self.config.num_add_channels
         if self.o_proj is not None:
             assert self.o_proj.weight.shape[1] == self.config.num_query_channels
             assert self.o_proj.weight.shape[0] == self.config.num_channels
@@ -392,7 +334,8 @@ class AttentionStruct(BaseModuleStruct):
             yield self.add_qkv_proj_key, self.add_k_proj_name, self.add_k_proj, self, "add_k_proj"
         if self.add_v_proj is not None:
             yield self.add_qkv_proj_key, self.add_v_proj_name, self.add_v_proj, self, "add_v_proj"
-        yield self.out_proj_key, self.o_proj_name, self.o_proj, self, "o_proj"
+        if self.o_proj is not None:
+            yield self.out_proj_key, self.o_proj_name, self.o_proj, self, "o_proj"
         if self.add_o_proj is not None:
             yield self.add_out_proj_key, self.add_o_proj_name, self.add_o_proj, self, "add_o_proj"
 

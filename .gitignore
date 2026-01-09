@@ -177,3 +177,5 @@ wandb/
 # External submodules (should not be committed)
 /nunchaku/
 /ComfyUI-nunchaku/
+flux1-dev.safetensors
+*.safetensors
