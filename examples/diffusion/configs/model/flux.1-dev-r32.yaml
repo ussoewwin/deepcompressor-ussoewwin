@@ -9,18 +9,18 @@ eval:
   protocol: fmeuler{num_steps}-g{guidance_scale}
 quant:
   calib:
-    batch_size: 4
+    batch_size: 2
     data: qdiff-r32
     path: datasets/{dtype}/{model}/{protocol}/{data}/s32
     num_samples: 32
   wgts:
     calib_range:
       element_batch_size: 16
-      sample_batch_size: 4
+      sample_batch_size: 2
       element_size: 512
       sample_size: 32
     low_rank:
-      sample_batch_size: 4
+      sample_batch_size: 2
       sample_size: 32
       rank: 32
       exclusive: false
@@ -38,7 +38,7 @@ quant:
   ipts:
     calib_range:
       element_batch_size: 16
-      sample_batch_size: 4
+      sample_batch_size: 2
       element_size: 512
       sample_size: 32
     skips: 
@@ -54,16 +54,16 @@ quant:
   opts:
     calib_range:
       element_batch_size: 16
-      sample_batch_size: 4
+      sample_batch_size: 2
       element_size: 512
       sample_size: 32
   smooth:
     proj:
       element_batch_size: -1
-      sample_batch_size: 4
+      sample_batch_size: 2
       element_size: -1
       sample_size: 32
     attn:
-      sample_batch_size: 4
+      sample_batch_size: 2
       sample_size: 32
   enable_smooth: false
