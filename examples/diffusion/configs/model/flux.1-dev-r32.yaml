@@ -57,7 +57,7 @@ quant:
       sample_batch_size: 4
       element_size: 512
       sample_size: -1
-  smooth:
-    proj: null
-    attn: null
-  enable_smooth: false
+  # smooth:
+  #   proj: null
+  #   attn: null
+  # enable_smooth: false
