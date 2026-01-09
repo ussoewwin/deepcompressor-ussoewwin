@@ -348,7 +348,7 @@ class DiffusionAttentionStruct(AttentionStruct):
         # Fix for FluxSingleTransformerBlock where o_proj is a sibling, not a child of attn
         # and has been assigned to attn struct for joint optimization.
         if self.parent is not None and isinstance(self.parent.module, FluxSingleTransformerBlock):
-            from ...utils.common import join_name
+            from deepcompressor.utils.common import join_name
             if self.o_proj is not None:
                 # o_proj matches parent.module.proj_out.linears[0]
                 # Its absolute name is join_name(parent.name, "proj_out.linears.0")
