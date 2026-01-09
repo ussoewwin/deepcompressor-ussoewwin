@@ -1,5 +1,5 @@
 collect:
   root: datasets
-  dataset_name: qdiff-r32
+  dataset_name: qdiff
   data_path: examples/diffusion/prompts/qdiff.yaml
   num_samples: 32
