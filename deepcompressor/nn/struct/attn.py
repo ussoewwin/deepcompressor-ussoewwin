@@ -308,6 +308,19 @@ class AttentionStruct(BaseModuleStruct):
         self.q_key = join_name(self.key, self.q_rkey, sep="_")
         self.k_key = join_name(self.key, self.k_rkey, sep="_")
         self.v_key = join_name(self.key, self.v_rkey, sep="_")
+        
+        self.q_proj_name = join_name(self.name, self.q_proj_rname)
+        self.k_proj_name = join_name(self.name, self.k_proj_rname)
+        self.v_proj_name = join_name(self.name, self.v_proj_rname)
+        self.o_proj_name = join_name(self.name, self.o_proj_rname)
+        self.add_q_proj_name = join_name(self.name, self.add_q_proj_rname)
+        self.add_k_proj_name = join_name(self.name, self.add_k_proj_rname)
+        self.add_v_proj_name = join_name(self.name, self.add_v_proj_rname)
+        self.add_o_proj_name = join_name(self.name, self.add_o_proj_rname)
+        self.q_name = join_name(self.name, self.q_rname)
+        self.k_name = join_name(self.name, self.k_rname)
+        self.v_name = join_name(self.name, self.v_rname)
+        
         if self.o_proj is not None:
             assert self.o_proj.weight.shape[1] == self.config.num_query_channels
             assert self.o_proj.weight.shape[0] == self.config.num_channels
