@@ -46,9 +46,12 @@ class LowRankBranch(nn.Module):
         if self.rank < 0:
             self.a.weight.data.copy_(weight)
         elif self.rank > 0:
+        elif self.rank > 0:
             # AntiGravity Fix: Run SVD on CPU to avoid VRAM OOM and slow FP64 on consumer GPUs
             # Consumer GPUs have very poor FP64 performance (1/32 or 1/64 of FP32).
-            weight_cpu = weight.detach().to("cpu", dtype=torch.float32).double() # Cast to float32 first if bfloat16 to avoid issues, then double
+            # Also using float32 instead of double because double is too slow even on CPU for this size,
+            # and float32 precision is sufficient for LoRA approximation.
+            weight_cpu = weight.detach().to("cpu", dtype=torch.float32) 
             u, s, vh = torch.linalg.svd(weight_cpu, full_matrices=False) # Use full_matrices=False (thin SVD) for speed
             
             # tensor: [oc, ic], u: [oc, rank], s: [rank], vh: [rank, ic] (if thin SVD and rank via slice)
@@ -77,6 +80,7 @@ class LowRankBranch(nn.Module):
             self.b.weight.data.copy_(us.to(device=device, dtype=dtype))
             
             del weight_cpu, u, s, vh, us
+
 
 
     def get_effective_weight(self) -> torch.Tensor | None:
