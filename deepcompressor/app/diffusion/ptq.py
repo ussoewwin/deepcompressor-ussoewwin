@@ -1088,7 +1088,7 @@ def main(config: DiffusionPtqRunConfig, logging_level: int = tools.logging.DEBUG
     if bool(config.export_nunchaku_flux):
         ptq_cache = None
         logger.info("* Cache writes: DISABLED for FLUX Nunchaku export (no *.pt cache files will be written)")
-        logger.info("* Smooth: ENABLED (proj) for FLUX Nunchaku export to reduce noisy outputs")
+
 
     logger.info("=== Configurations ===")
     tools.logging.info(config.formatted_str(), logger=logger)
