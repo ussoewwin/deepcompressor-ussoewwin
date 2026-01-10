@@ -46,7 +46,6 @@ class LowRankBranch(nn.Module):
         if self.rank < 0:
             self.a.weight.data.copy_(weight)
         elif self.rank > 0:
-        elif self.rank > 0:
             # AntiGravity Fix: Run SVD on CPU to avoid VRAM OOM and slow FP64 on consumer GPUs
             # Consumer GPUs have very poor FP64 performance (1/32 or 1/64 of FP32).
             # Also using float32 instead of double because double is too slow even on CPU for this size,
