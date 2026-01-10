@@ -46,17 +46,38 @@ class LowRankBranch(nn.Module):
         if self.rank < 0:
             self.a.weight.data.copy_(weight)
         elif self.rank > 0:
-            u, s, vh = torch.linalg.svd(weight.double())
-            # tensor: [oc, ic], u: [oc, oc], s: [oc], vh: [ic, ic]
-            # us: [oc, rank], vh: [rank, ic]
-            us = u[:, : self.rank] * s[: self.rank]
-            vh = vh[: self.rank]
+            # AntiGravity Fix: Run SVD on CPU to avoid VRAM OOM and slow FP64 on consumer GPUs
+            # Consumer GPUs have very poor FP64 performance (1/32 or 1/64 of FP32).
+            weight_cpu = weight.detach().to("cpu", dtype=torch.float32).double() # Cast to float32 first if bfloat16 to avoid issues, then double
+            u, s, vh = torch.linalg.svd(weight_cpu, full_matrices=False) # Use full_matrices=False (thin SVD) for speed
+            
+            # tensor: [oc, ic], u: [oc, rank], s: [rank], vh: [rank, ic] (if thin SVD and rank via slice)
+            # Actually torch.linalg.svd returns u, s, Vh
+            # s is 1D vector of singular values.
+            
+            # Keep top-k rank
+            u = u[:, : self.rank]
+            s = s[: self.rank]
+            vh = vh[: self.rank, :]
+            
+            us = u * s.unsqueeze(0) # [oc, rank] * [1, rank] broadcast? No s is 1D.
+            # s is [rank]. u is [oc, rank].
+            # We want u * s.
+            # u * s via broadcasting: [oc, rank] * [rank] works? Yes, last dim matches.
+            us = u * s
+            
+            # vh is [rank, ic]
+            
             assert not us.isnan().any(), "NaN in U * S"
             assert not vh.isnan().any(), "NaN in V^T"
             assert not us.isinf().any(), "Inf in U * S"
             assert not vh.isinf().any(), "Inf in V^T"
-            self.a.weight.data.copy_(vh.to(dtype))
-            self.b.weight.data.copy_(us.to(dtype))
+            
+            self.a.weight.data.copy_(vh.to(device=device, dtype=dtype))
+            self.b.weight.data.copy_(us.to(device=device, dtype=dtype))
+            
+            del weight_cpu, u, s, vh, us
+
 
     def get_effective_weight(self) -> torch.Tensor | None:
         if self.rank == 0:
