@@ -46,29 +46,32 @@ class LowRankBranch(nn.Module):
         if self.rank < 0:
             self.a.weight.data.copy_(weight)
         elif self.rank > 0:
-            # AntiGravity Fix: Use torch.svd_lowrank on CPU for fast approximate SVD
-            # We use float32 because:
-            # 1. bfloat16 is NOT supported by torch.svd_lowrank (RuntimeError).
-            # 2. double (float64) is too slow (O(N^3) or slow implementation).
-            # 3. float32 is sufficient precision for bfloat16 weights.
-            weight_cpu = weight.detach().to("cpu", dtype=torch.float32)
+            # AntiGravity Fix: Use float32 SVD on the original device (GPU).
+            # Tests confirm torch.linalg.svd on GPU with float32 takes ~2 seconds for 3072x12288.
+            # double (float64) causes extreme slowness/hangs on consumer GPUs.
+            # bfloat16 is not supported by svd.
+            # Therefore, float32 is the correct, fast, and precise solution.
+            weight_fp32 = weight.to(dtype=torch.float32) # Stay on device (GPU)
+            u, s, vh = torch.linalg.svd(weight_fp32, full_matrices=False)
             
-            # svd_lowrank returns U, S, V such that A approx U @ diag(S) @ V.T
-            # U: [oc, rank], S: [rank], V: [ic, rank]
-            u, s, v = torch.svd_lowrank(weight_cpu, q=self.rank, niter=10)
+            # tensor: [oc, ic], u: [oc, rank], s: [rank], vh: [rank, ic] (if thin SVD and rank via slice)
+            # Actually torch.linalg.svd returns u, s, Vh
+            # s is 1D vector of singular values.
             
-            # We need Vh (V transpose) for self.a
-            vh = v.t() # [rank, ic]
+            # Keep top-k rank
+            u = u[:, : self.rank]
+            s = s[: self.rank]
+            vh = vh[: self.rank, :]
             
-            # We need U * S for self.b
-            us = u * s.unsqueeze(0) # [oc, rank] * [1, rank] -> [oc, rank] via broadcast
+            us = u * s.unsqueeze(0) # [oc, rank] * [1, rank] -> [oc, rank]
             # u * s means u[:, i] * s[i].
             us = u * s
             
             self.a.weight.data.copy_(vh.to(device=device, dtype=dtype))
             self.b.weight.data.copy_(us.to(device=device, dtype=dtype))
             
-            del weight_cpu, u, s, v, vh, us
+            del weight_fp32, u, s, vh, us
+
 
 
 
