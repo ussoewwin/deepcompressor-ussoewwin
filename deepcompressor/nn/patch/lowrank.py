@@ -47,8 +47,10 @@ class LowRankBranch(nn.Module):
             self.a.weight.data.copy_(weight)
         elif self.rank > 0:
             # AntiGravity Fix: Use torch.svd_lowrank on CPU for fast approximate SVD
-            # This avoids calculating the full SVD (O(N^3)) which is incredibly slow for large matrices.
-            # We only need the top-k singular values.
+            # We use float32 because:
+            # 1. bfloat16 is NOT supported by torch.svd_lowrank (RuntimeError).
+            # 2. double (float64) is too slow (O(N^3) or slow implementation).
+            # 3. float32 is sufficient precision for bfloat16 weights.
             weight_cpu = weight.detach().to("cpu", dtype=torch.float32)
             
             # svd_lowrank returns U, S, V such that A approx U @ diag(S) @ V.T
@@ -60,7 +62,6 @@ class LowRankBranch(nn.Module):
             
             # We need U * S for self.b
             us = u * s.unsqueeze(0) # [oc, rank] * [1, rank] -> [oc, rank] via broadcast
-            # Actually s is [rank]. u is [oc, rank].
             # u * s means u[:, i] * s[i].
             us = u * s
             
@@ -68,6 +69,8 @@ class LowRankBranch(nn.Module):
             self.b.weight.data.copy_(us.to(device=device, dtype=dtype))
             
             del weight_cpu, u, s, v, vh, us
+
+
 
 
 
