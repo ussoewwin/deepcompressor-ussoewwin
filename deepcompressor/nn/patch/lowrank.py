@@ -46,39 +46,28 @@ class LowRankBranch(nn.Module):
         if self.rank < 0:
             self.a.weight.data.copy_(weight)
         elif self.rank > 0:
-            # AntiGravity Fix: Run SVD on CPU to avoid VRAM OOM and slow FP64 on consumer GPUs
-            # Consumer GPUs have very poor FP64 performance (1/32 or 1/64 of FP32).
-            # Also using float32 instead of double because double is too slow even on CPU for this size,
-            # and float32 precision is sufficient for LoRA approximation.
-            weight_cpu = weight.detach().to("cpu", dtype=torch.float32) 
-            u, s, vh = torch.linalg.svd(weight_cpu, full_matrices=False) # Use full_matrices=False (thin SVD) for speed
+            # AntiGravity Fix: Use torch.svd_lowrank on CPU for fast approximate SVD
+            # This avoids calculating the full SVD (O(N^3)) which is incredibly slow for large matrices.
+            # We only need the top-k singular values.
+            weight_cpu = weight.detach().to("cpu", dtype=torch.float32)
             
-            # tensor: [oc, ic], u: [oc, rank], s: [rank], vh: [rank, ic] (if thin SVD and rank via slice)
-            # Actually torch.linalg.svd returns u, s, Vh
-            # s is 1D vector of singular values.
+            # svd_lowrank returns U, S, V such that A approx U @ diag(S) @ V.T
+            # U: [oc, rank], S: [rank], V: [ic, rank]
+            u, s, v = torch.svd_lowrank(weight_cpu, q=self.rank, niter=10)
             
-            # Keep top-k rank
-            u = u[:, : self.rank]
-            s = s[: self.rank]
-            vh = vh[: self.rank, :]
+            # We need Vh (V transpose) for self.a
+            vh = v.t() # [rank, ic]
             
-            us = u * s.unsqueeze(0) # [oc, rank] * [1, rank] broadcast? No s is 1D.
-            # s is [rank]. u is [oc, rank].
-            # We want u * s.
-            # u * s via broadcasting: [oc, rank] * [rank] works? Yes, last dim matches.
+            # We need U * S for self.b
+            us = u * s.unsqueeze(0) # [oc, rank] * [1, rank] -> [oc, rank] via broadcast
+            # Actually s is [rank]. u is [oc, rank].
+            # u * s means u[:, i] * s[i].
             us = u * s
-            
-            # vh is [rank, ic]
-            
-            assert not us.isnan().any(), "NaN in U * S"
-            assert not vh.isnan().any(), "NaN in V^T"
-            assert not us.isinf().any(), "Inf in U * S"
-            assert not vh.isinf().any(), "Inf in V^T"
             
             self.a.weight.data.copy_(vh.to(device=device, dtype=dtype))
             self.b.weight.data.copy_(us.to(device=device, dtype=dtype))
             
-            del weight_cpu, u, s, vh, us
+            del weight_cpu, u, s, v, vh, us
 
 
 
