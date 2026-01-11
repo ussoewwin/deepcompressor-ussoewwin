@@ -71,6 +71,9 @@ class LowRankBranch(nn.Module):
             self.b.weight.data.copy_(us.to(device=device, dtype=dtype))
             
             del weight_fp32, u, s, vh, us
+            # Explicit cleanup to prevent VRAM fragmentation/accumulation during heavy SVD loops
+            gc.collect()
+            torch.cuda.empty_cache()
 
 
 

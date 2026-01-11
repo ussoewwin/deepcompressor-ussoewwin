@@ -228,25 +228,41 @@ def convert_to_nunchaku_transformer_block_state_dict(
             # For fused QKV, branch is stored under the FIRST name only (the "q" projection)
             first_branch_name = branch_names[0]
             first_branch = branch_dict.get(f"{block_name}.{first_branch_name}", None)
+            
+            # Calculate expected output dimension from weights
+            expected_out_dim = sum(w.shape[0] for w in weight)
+            
+            branch = None
+            # Check if first branch exists and matches dimension
             if first_branch is not None:
-                # Branch exists under the first name - this is the fused branch for the entire QKV group
-                branch = (first_branch["a.weight"], first_branch["b.weight"])
-            else:
+                b_weight = first_branch["b.weight"]
+                if b_weight.shape[0] == expected_out_dim:
+                    branch = (first_branch["a.weight"], b_weight)
+            
+            # If first branch didn't work (missing or mismatch), try fusing individual branches
+            if branch is None:
                 # Try legacy approach: check if each individual module has a branch
                 branches = [branch_dict.get(f"{block_name}.{bn}", None) for bn in branch_names]
                 if all(b is not None for b in branches):
                     # All individual branches exist, fuse them
                     a0 = branches[0]["a.weight"]
+                    # Ensure all 'a' weights (down projection) are identical
                     if not all(torch.equal(b["a.weight"], a0) for b in branches[1:]):
+                         # If 'a' weights differ, we can't simply fuse. 
+                         # However, for some cases (like split QKV where they SHOULD share input),
+                         # if they are different, it's a hard error for Nunchaku format which expects shared input.
+                         # But strictly speaking, SVDQuant *should* share 'a' for QKV fusion.
+                         # If we are here, it means 'weight.py' didn't fuse them, so they might have indifferent 'a'.
+                         # In that case, we can't merge them into one LoRA adapter efficiently without re-SVD.
+                         # But let's raise the error as before.
                         raise ValueError(
                             f"Cannot fuse low-rank branch for {block_name}.{converted_local_name}: "
                             "down projection (a.weight) differs across candidates. "
                             "Please quantize with a shared low-rank basis for fused qkv exports."
                         )
                     b_cat = torch.concat([b["b.weight"] for b in branches], dim=0)
-                    branch = (a0, b_cat)
-                else:
-                    branch = None
+                    if b_cat.shape[0] == expected_out_dim:
+                        branch = (a0, b_cat)
         else:
             branch = branch_dict.get(f"{block_name}.{branch_names}", None) if branch_names else None
             if branch is not None:
