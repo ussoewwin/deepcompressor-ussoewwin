@@ -1,7 +1,5 @@
 # -*- coding: utf-8 -*-
 
-import gc
-
 import torch
 import torch.linalg
 import torch.nn as nn
@@ -48,25 +46,17 @@ class LowRankBranch(nn.Module):
         if self.rank < 0:
             self.a.weight.data.copy_(weight)
         elif self.rank > 0:
-            # AntiGravity Fix: Use CPU-based svd_lowrank for stability.
-            # GPU full SVD can freeze on certain driver/hardware combinations.
-            # svd_lowrank is a randomized algorithm optimized for low-rank approximation.
-            # Move to CPU, compute, then move results back. Slower but rock-solid.
-            weight_cpu = weight.to(device="cpu", dtype=torch.float32)
-            u, s, v = torch.svd_lowrank(weight_cpu, q=self.rank)
-            # svd_lowrank returns: U [m, q], S [q], V [n, q]
-            # We need: a.weight = V^T [rank, in_features], b.weight = U*S [out_features, rank]
-            
-            us = u * s  # [out_features, rank]
-            vt = v.T    # [rank, in_features]
-            
-            self.a.weight.data.copy_(vt.to(device=device, dtype=dtype))
-            self.b.weight.data.copy_(us.to(device=device, dtype=dtype))
-            
-            del weight_cpu, u, s, v, us, vt
-            gc.collect()
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
+            u, s, vh = torch.linalg.svd(weight.double())
+            # tensor: [oc, ic], u: [oc, oc], s: [oc], vh: [ic, ic]
+            # us: [oc, rank], vh: [rank, ic]
+            us = u[:, : self.rank] * s[: self.rank]
+            vh = vh[: self.rank]
+            assert not us.isnan().any(), "NaN in U * S"
+            assert not vh.isnan().any(), "NaN in V^T"
+            assert not us.isinf().any(), "Inf in U * S"
+            assert not vh.isinf().any(), "Inf in V^T"
+            self.a.weight.data.copy_(vh.to(dtype))
+            self.b.weight.data.copy_(us.to(dtype))
 
 
 
