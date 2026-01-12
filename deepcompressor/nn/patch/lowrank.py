@@ -53,8 +53,19 @@ class LowRankBranch(nn.Module):
             # double (float64) causes extreme slowness/hangs on consumer GPUs.
             # bfloat16 is not supported by svd.
             # Therefore, float32 is the correct, fast, and precise solution.
+            
+            # AntiGravity Debug: Trace SVD start
+            print(f"    [DEBUG] Starting SVD: shape={weight.shape}, device={weight.device}")
+            
             weight_fp32 = weight.to(dtype=torch.float32) # Stay on device (GPU)
-            u, s, vh = torch.linalg.svd(weight_fp32, full_matrices=False)
+            try:
+                u, s, vh = torch.linalg.svd(weight_fp32, full_matrices=False)
+            except Exception as e:
+                print(f"    [ERROR] SVD Execution Failed: {e}")
+                raise e
+            
+            # AntiGravity Debug: Trace SVD end
+            print(f"    [DEBUG] Finished SVD")
             
             # tensor: [oc, ic], u: [oc, rank], s: [rank], vh: [rank, ic] (if thin SVD and rank via slice)
             # Actually torch.linalg.svd returns u, s, Vh

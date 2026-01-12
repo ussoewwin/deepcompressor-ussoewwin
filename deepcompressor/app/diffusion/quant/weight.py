@@ -92,7 +92,6 @@ def calibrate_diffusion_block_low_rank_branch(  # noqa: C901
                         continue
                     else:
                         continue
-        
         # 修正点3: グループ化されたモジュール名全てをprocessedに追加
         for name in module_names:
             processed.add(name)
@@ -399,12 +398,18 @@ def quantize_diffusion_block_weights(
                 and config.wgts.low_rank.num_iters <= 1
             ):
                 logger.debug("- Adding compensate low-rank branch to %s (side)", n)
+                # AntiGravity Debug: Log before SVD
+                logger.debug("  DEBUG: Computing SVD for %s, shape=%s, rank=%d", n, m.weight.shape, config.wgts.low_rank.rank)
+                
                 LowRankBranch(
                     in_features=m.weight.shape[1],
                     out_features=m.weight.shape[0],
                     rank=config.wgts.low_rank.rank,
                     weight=m.weight.data - result.data,
                 ).as_hook().register(m)
+                
+                # AntiGravity Debug: Log after SVD
+                logger.debug("  DEBUG: SVD Compute & Register Done for %s", n)
 
             m.weight.data = result.data
 
@@ -528,6 +533,8 @@ def quantize_diffusion_weights(
                         layer_cache=layer_cache,
                         layer_kwargs=layer_kwargs,
                     )
+                    gc.collect()
+                    torch.cuda.empty_cache()
         tools.logging.Formatter.indent_dec()
 
     skip_pre_modules = all(key in config.wgts.skips for key in model.get_prev_module_keys())
@@ -591,6 +598,8 @@ def quantize_diffusion_weights(
             return_with_scale_state_dict=return_with_scale_state_dict,
         )
         scale_state_dict.update(layer_scale_state_dict)
+        gc.collect()
+        torch.cuda.empty_cache()
     return quantizer_state_dict, branch_state_dict, scale_state_dict
 
 
