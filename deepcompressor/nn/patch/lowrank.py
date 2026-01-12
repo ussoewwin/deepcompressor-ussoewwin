@@ -48,45 +48,25 @@ class LowRankBranch(nn.Module):
         if self.rank < 0:
             self.a.weight.data.copy_(weight)
         elif self.rank > 0:
-            # AntiGravity Fix: Use float32 SVD on the original device (GPU).
-            # Tests confirm torch.linalg.svd on GPU with float32 takes ~2 seconds for 3072x12288.
-            # double (float64) causes extreme slowness/hangs on consumer GPUs.
-            # bfloat16 is not supported by svd.
-            # Therefore, float32 is the correct, fast, and precise solution.
+            # AntiGravity Fix: Use CPU-based svd_lowrank for stability.
+            # GPU full SVD can freeze on certain driver/hardware combinations.
+            # svd_lowrank is a randomized algorithm optimized for low-rank approximation.
+            # Move to CPU, compute, then move results back. Slower but rock-solid.
+            weight_cpu = weight.to(device="cpu", dtype=torch.float32)
+            u, s, v = torch.svd_lowrank(weight_cpu, q=self.rank)
+            # svd_lowrank returns: U [m, q], S [q], V [n, q]
+            # We need: a.weight = V^T [rank, in_features], b.weight = U*S [out_features, rank]
             
-            # AntiGravity Debug: Trace SVD start
-            print(f"    [DEBUG] Starting SVD: shape={weight.shape}, device={weight.device}")
+            us = u * s  # [out_features, rank]
+            vt = v.T    # [rank, in_features]
             
-            weight_fp32 = weight.to(dtype=torch.float32) # Stay on device (GPU)
-            try:
-                u, s, vh = torch.linalg.svd(weight_fp32, full_matrices=False)
-            except Exception as e:
-                print(f"    [ERROR] SVD Execution Failed: {e}")
-                raise e
-            
-            # AntiGravity Debug: Trace SVD end
-            print(f"    [DEBUG] Finished SVD")
-            
-            # tensor: [oc, ic], u: [oc, rank], s: [rank], vh: [rank, ic] (if thin SVD and rank via slice)
-            # Actually torch.linalg.svd returns u, s, Vh
-            # s is 1D vector of singular values.
-            
-            # Keep top-k rank
-            u = u[:, : self.rank]
-            s = s[: self.rank]
-            vh = vh[: self.rank, :]
-            
-            us = u * s.unsqueeze(0) # [oc, rank] * [1, rank] -> [oc, rank]
-            # u * s means u[:, i] * s[i].
-            us = u * s
-            
-            self.a.weight.data.copy_(vh.to(device=device, dtype=dtype))
+            self.a.weight.data.copy_(vt.to(device=device, dtype=dtype))
             self.b.weight.data.copy_(us.to(device=device, dtype=dtype))
             
-            del weight_fp32, u, s, vh, us
-            # Explicit cleanup to prevent VRAM fragmentation/accumulation during heavy SVD loops
+            del weight_cpu, u, s, v, us, vt
             gc.collect()
-            torch.cuda.empty_cache()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
 
 
 

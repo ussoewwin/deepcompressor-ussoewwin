@@ -398,18 +398,12 @@ def quantize_diffusion_block_weights(
                 and config.wgts.low_rank.num_iters <= 1
             ):
                 logger.debug("- Adding compensate low-rank branch to %s (side)", n)
-                # AntiGravity Debug: Log before SVD
-                logger.debug("  DEBUG: Computing SVD for %s, shape=%s, rank=%d", n, m.weight.shape, config.wgts.low_rank.rank)
-                
                 LowRankBranch(
                     in_features=m.weight.shape[1],
                     out_features=m.weight.shape[0],
                     rank=config.wgts.low_rank.rank,
                     weight=m.weight.data - result.data,
                 ).as_hook().register(m)
-                
-                # AntiGravity Debug: Log after SVD
-                logger.debug("  DEBUG: SVD Compute & Register Done for %s", n)
 
             m.weight.data = result.data
 
